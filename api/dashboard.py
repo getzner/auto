@@ -297,8 +297,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .btn-save:hover { background: #4f46e5; transform: translateY(-1px); }
   .btn-save:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  .btn-save:disabled { opacity: 0.4; cursor: not-allowed; }
-
   /* &#9472;&#9472; Trade Journal Cards &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472; */
   .journal-grid {
     display: grid;
@@ -683,28 +681,36 @@ const fmtPnl = (n) => {
   return (v >= 0 ? '+' : '') + v.toFixed(2);
 };
 
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
 let dailyChartInst, agentChartInst;
 let currentConfig = {};
 let logPaused = false;
+let isLoading = false;
 
-const safeFetch = async (url, fallback) => {
-    try {
-        const r = await fetch(url);
-        if (!r.ok) {
-            if (r.status === 503) {
-                const el = document.getElementById('lastUpdate');
-                if (el) el.innerHTML = `<span style="color:var(--warn)">&#9888; Database temporarily unavailable &#8211; retrying...</span>`;
+const safeFetch = async (url, fallback, retries=2, backoff=500) => {
+    for (let i = 0; i <= retries; i++) {
+        try {
+            const r = await fetch(url);
+            if (!r.ok) {
+                if (r.status === 503 && i === retries) {
+                    const el = document.getElementById('lastUpdate');
+                    if (el) el.innerHTML = `<span style="color:var(--warn)">&#9888; Database temporarily unavailable &#8211; retrying...</span>`;
+                }
+                throw new Error(`HTTP ${r.status}`);
             }
-            throw new Error(`HTTP ${r.status}`);
+            return await r.json();
+        } catch(e) {
+            if (i === retries) return fallback;
+            await new Promise(res => setTimeout(res, backoff * Math.pow(2, i)));
         }
-        return await r.json();
-    } catch(e) {
-        console.warn(`Fetch failed for ${url}:`, e);
-        return fallback;
     }
 };
 
 async function load() {
+  if (document.hidden) { setTimeout(load, 30000); return; }
+  if (isLoading) return;
+  isLoading = true;
   try {
     const lastUpdateNode = document.getElementById('lastUpdate');
     
@@ -869,7 +875,7 @@ async function load() {
                     <td>${c.confidence}/10</td>
                     <td>
                         <div style="display:flex; justify-content:space-between; align-items:center; gap:10px">
-                            <span style="font-size:.7rem; color:var(--muted); max-width:250px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis" title="${c.reasoning}">${c.reasoning}</span>
+                            <span style="font-size:.7rem; color:var(--muted); max-width:250px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis" title="${esc(c.reasoning)}">${esc(c.reasoning)}</span>
                             <div style="display:flex; gap:4px; flex-shrink:0">
                                 <button class="btn-feedback" onclick="submitFeedback('${c.challenger_name}', 1, this)">\u2705</button>
                                 <button class="btn-feedback down" onclick="submitFeedback('${c.challenger_name}', -1, this)">\u274C</button>
@@ -919,9 +925,9 @@ async function load() {
                 ${score}/100
               </div>
             </div>
-            <div class="journal-summary">${j.summary}</div>
-            <ul class="journal-lessons">${lessons.map(l => `<li>${l}</li>`).join('')}</ul>
-            <div class="journal-critique"><strong>Analyst Critique:</strong> ${j.agent_critique}</div>
+            <div class="journal-summary">${esc(j.summary)}</div>
+            <ul class="journal-lessons">${lessons.map(l => `<li>${esc(l)}</li>`).join('')}</ul>
+            <div class="journal-critique"><strong>Analyst Critique:</strong> ${esc(j.agent_critique)}</div>
             <div style="margin-top:12px; font-size:.7rem; color:var(--muted); display:flex; justify-content:space-between">
               <span>Profit: <span style="color:${pnl >= 0 ? 'var(--accent2)' : 'var(--danger)'}">${fmtPnl(pnl)} USDT</span></span>
               <span>${new Date(j.ts).toLocaleDateString()}</span>
@@ -936,6 +942,9 @@ async function load() {
     console.error("DASHBOARD FATAL ERROR:", err); 
     const upd = document.getElementById('lastUpdate');
     if (upd) upd.innerHTML = `<span style="color:var(--danger)">\u26A0 FATAL: ${err.message}</span>`;
+  } finally {
+    isLoading = false;
+    setTimeout(load, 30000);
   }
 }
 
@@ -1122,8 +1131,11 @@ async function submitFeedback(skill_id, rating, btn) {
         const parent = btn.parentElement;
         parent.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        console.log(`Feedback for ${skill_id}: ${rating}`);
-        // Endpoint will be implemented to save to skill_outcomes
+        await fetch('/api/feedback', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ decision_id: null, feedback_text: `Challenger ${skill_id} received manual rating: ${rating}` })
+        });
     } catch(e) { console.error(e); }
 }
 
@@ -1136,13 +1148,6 @@ function init() {
   pollSafety();
   pollRegime();
   pollLogs();
-  
-  // Setup intervals
-  setInterval(load, 30000);
-  setInterval(pollHealth, 10000);
-  setInterval(pollSafety, 5000);
-  setInterval(pollRegime, 60000);
-  setInterval(pollLogs, 3000);
 }
 
 if (document.readyState === 'loading') {
@@ -1154,6 +1159,7 @@ if (document.readyState === 'loading') {
 
 // --- Service status polling ---
 async function pollHealth() {
+  if (document.hidden) { setTimeout(pollHealth, 10000); return; }
   const services = ['main','server','postgres','redis','ollama','stop_monitor','scanner'];
   services.forEach(s => {
     const el = document.getElementById('sphere-'+s);
@@ -1180,6 +1186,8 @@ async function pollHealth() {
       if (el) el.className = 'sphere error';
     });
     document.getElementById('healthTs').textContent = '\u26A0 Health offline';
+  } finally {
+    setTimeout(pollHealth, 10000);
   }
 }
 
@@ -1240,6 +1248,7 @@ async function reloadConfig() {
 
 // &#9472;&#9472; Safety / Kill Switch &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
 async function pollSafety() {
+    if (document.hidden) { setTimeout(pollSafety, 5000); return; }
     try {
         const data = await fetch('/api/config/safety').then(r => r.json());
         const btn = document.getElementById('killSwitchBtn');
@@ -1278,22 +1287,25 @@ async function pollSafety() {
                 modeLabel.innerHTML = '&#128176; LIVE Production';
             }
         }
-    } catch(e) { console.error("Safety poll failed"); }
+    } catch(e) { console.error("Safety poll failed"); } finally {
+        setTimeout(pollSafety, 5000);
+    }
 }
 
 async function toggleKillSwitch() {
-    const newState = !currentConfig.kill_switch;
-    const msg = newState ? "STOP ALL TRADING IMMEDIATELY?" : "Resume system operations?";
-    if (!confirm(msg)) return;
-    
     try {
+        const safetyData = await fetch('/api/config/safety').then(r => r.json());
+        const newState = !safetyData.kill_switch;
+        const msg = newState ? "STOP ALL TRADING IMMEDIATELY?" : "Resume system operations?";
+        if (!confirm(msg)) return;
+        
         const res = await fetch('/api/config/safety', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ kill_switch: newState })
         });
         if (res.ok) pollSafety();
-    } catch(e) { alert("Kill switch failed!"); }
+    } catch(e) { alert("Kill switch update failed!"); }
 }
 
 // &#9472;&#9472; Agent Debate & Sparring Room &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
@@ -1347,7 +1359,7 @@ function appendMessage(role, content, agentLabel) {
     'border-radius:' + (isUser ? '14px 14px 4px 14px' : '14px 14px 14px 4px') + ';' +
     'padding:10px 14px;font-size:.85rem;line-height:1.55;' +
     'border:1px solid ' + (isUser ? 'transparent' : 'var(--border)') + ';white-space:pre-wrap;word-break:break-word">' +
-    content.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>';
+    esc(content) + '</div>';
   hist.appendChild(wrap);
   hist.scrollTop = hist.scrollHeight;
 }
@@ -1366,6 +1378,11 @@ async function sendChatMessage() {
   appendMessage('user', text);
   chatMessages.push({role:'user', content:text});
   input.value = '';
+  
+  const MAX_HISTORY = 20;
+  if (chatMessages.length > MAX_HISTORY) {
+      chatMessages = chatMessages.slice(-MAX_HISTORY);
+  }
 
   // Typing indicator
   const hist = document.getElementById('chatHistory');
@@ -1389,6 +1406,9 @@ async function sendChatMessage() {
     const data = await res.json();
     appendMessage('assistant', data.reply, agentLabel);
     chatMessages.push({role:'assistant', content:data.reply});
+    if (chatMessages.length > MAX_HISTORY) {
+        chatMessages = chatMessages.slice(-MAX_HISTORY);
+    }
   } catch(e) {
     const t = document.getElementById('typingIndicator');
     if (t) t.remove();
@@ -1433,7 +1453,7 @@ document.addEventListener('DOMContentLoaded', () => { onAgentChange(); });
 
 // --- Live Log Viewer ---
 async function pollLogs() {
-  if (logPaused) return;
+  if (document.hidden) { setTimeout(pollLogs, 3000); return; }
   try {
     const data = await fetch('/logs?n=40').then(r => r.json());
     const viewer = document.getElementById('logViewer');
@@ -1450,17 +1470,20 @@ async function pollLogs() {
       else if (l.includes('[LLM]'))     cls = 'log-llm';
       else if (l.includes('[SKILL]'))   cls = 'log-skill';
       
-      return `<div class="log-line ${cls}">${l.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+      return `<div class="log-line ${cls}">${esc(l)}</div>`;
     }).join('');
     
     if (wasAtBottom) viewer.scrollTop = viewer.scrollHeight;
     document.getElementById('logTs').textContent = 'Last update ' + new Date().toLocaleTimeString();
   } catch(e) {
     document.getElementById('logTs').textContent = '\u26A0 Logs offline';
+  } finally {
+    setTimeout(pollLogs, 3000);
   }
 }
 
 async function pollRegime() {
+    if (document.hidden) { setTimeout(pollRegime, 60000); return; }
     try {
         const res = await fetch('/api/regime/BTC%2FUSDT').then(r => r.json());
         const el = document.getElementById('label-regime');
@@ -1472,7 +1495,9 @@ async function pollRegime() {
             el.style.color = color;
             el.textContent = `${res.regime} (Vol: ${res.volatility})`;
         }
-    } catch(e) {}
+    } catch(e) {} finally {
+        setTimeout(pollRegime, 60000);
+    }
 }
 
 // Global error handler for debugging

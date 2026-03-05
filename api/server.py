@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
 from pydantic import BaseModel
 import uvicorn
 from loguru import logger
@@ -164,8 +166,23 @@ app.add_middleware(
 
 SYMBOLS = [s.strip() for s in get_env_string("SYMBOLS", "BTC/USDT,ETH/USDT").split(",")]
 
-app.include_router(get_dashboard_router())
-app.include_router(get_config_router())
+security = HTTPBasic()
+
+def verify(credentials: HTTPBasicCredentials = Depends(security)):
+    req_user = os.getenv("DASHBOARD_USER", "admin")
+    req_pass = os.getenv("DASHBOARD_PASS", "admin123")
+    ok_user = secrets.compare_digest(credentials.username, req_user)
+    ok_pass = secrets.compare_digest(credentials.password, req_pass)
+    if not (ok_user and ok_pass):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+app.include_router(get_dashboard_router(), dependencies=[Depends(verify)])
+app.include_router(get_config_router(), dependencies=[Depends(verify)])
 
 
 # ── Health ────────────────────────────────────────────────
@@ -245,7 +262,7 @@ async def health():
 
 
 @app.get("/recent-trades")
-async def recent_trades():
+async def recent_trades(user: str = Depends(verify)):
     """Last 20 closed positions with trade details."""
     from data.db import get_db_session
     try:
@@ -295,7 +312,7 @@ async def recent_trades():
 # ── Live Log Viewer ───────────────────────────────────────
 
 @app.get("/logs")
-async def get_logs(n: int = 40, filter: str = "SCANNER|MONITOR|RISK|ORC|LLM|SKILL"):
+async def get_logs(n: int = 40, filter: str = "SCANNER|MONITOR|RISK|ORC|LLM|SKILL", user: str = Depends(verify)):
     """Return last N filtered log lines efficiently from systemd journal."""
     import subprocess
     keywords = [k.strip() for k in filter.split("|") if k.strip()]
@@ -322,7 +339,7 @@ async def get_logs(n: int = 40, filter: str = "SCANNER|MONITOR|RISK|ORC|LLM|SKIL
 # ── Status / Positions ────────────────────────────────────
 
 @app.get("/status")
-async def get_status():
+async def get_status(user: str = Depends(verify)):
     from data.db import get_db_session
     async with get_db_session() as conn:
             open_pos = await conn.fetch(
@@ -389,7 +406,7 @@ async def get_status():
 # ── Decision History ──────────────────────────────────────
 
 @app.get("/decisions")
-async def get_decisions(limit: int = 20, symbol: str | None = None):
+async def get_decisions(limit: int = 20, symbol: str | None = None, user: str = Depends(verify)):
     from data.db import get_db_session
     async with get_db_session() as conn:
             if symbol:
@@ -406,7 +423,7 @@ async def get_decisions(limit: int = 20, symbol: str | None = None):
 
 
 @app.get("/decisions/{decision_id}")
-async def get_decision_detail(decision_id: int):
+async def get_decision_detail(decision_id: int, user: str = Depends(verify)):
     from data.db import get_db_session
     async with get_db_session() as conn:
             row = await conn.fetchrow("SELECT * FROM decisions WHERE id=$1", decision_id)
@@ -421,7 +438,7 @@ class RunRequest(BaseModel):
     symbol: str = "BTC/USDT"
 
 @app.post("/run")
-async def manual_run(req: RunRequest):
+async def manual_run(req: RunRequest, user: str = Depends(verify)):
     if req.symbol.strip() not in [s.strip() for s in SYMBOLS]:
         raise HTTPException(400, f"Symbol {req.symbol} not in configured symbols: {SYMBOLS}")
     logger.info(f"[API] Manual run triggered: {req.symbol}")
@@ -432,7 +449,7 @@ async def manual_run(req: RunRequest):
 # ── Trade Journal ─────────────────────────────────────────
 
 @app.get("/journal")
-async def get_journal(limit: int = 50):
+async def get_journal(limit: int = 50, user: str = Depends(verify)):
     """Fetch recent AI trade journals."""
     from data.db import get_db_session
     async with get_db_session() as conn:
@@ -448,7 +465,7 @@ async def get_journal(limit: int = 50):
     return [dict(r) for r in rows]
 
 @app.get("/journal/{position_id}")
-async def get_journal_detail(position_id: int):
+async def get_journal_detail(position_id: int, user: str = Depends(verify)):
     """Fetch detailed AI journal for a specific position."""
     from data.db import get_db_session
     async with get_db_session() as conn:
@@ -464,7 +481,7 @@ async def get_journal_detail(position_id: int):
 # ── Meta-Agent ─────────────────────────────────────────────
 
 @app.post("/meta-review")
-async def trigger_meta_review(req: RunRequest):
+async def trigger_meta_review(req: RunRequest, user: str = Depends(verify)):
     """Trigger an autonomous weekly review + improvement cycle."""
     logger.info(f"[API] Meta-review triggered: {req.symbol}")
     from agents.meta_agent import MetaAgent
@@ -473,7 +490,7 @@ async def trigger_meta_review(req: RunRequest):
 
 
 @app.get("/accuracy")
-async def get_agent_accuracy():
+async def get_agent_accuracy(user: str = Depends(verify)):
     """Get historical accuracy (hit rate) per analyst agent."""
     from data.db import get_db_session
     try:
