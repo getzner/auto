@@ -68,14 +68,21 @@ async def node_collect_data(state: TradingState) -> TradingState:
         except Exception as e:
             logger.error(f"[ORC] Error checking safety: {e}")
 
-    logger.info(f"[ORC] collect_data: {symbol}")
+    logger.info(f"[ORC] collect_data: {symbol} - starting parallel tasks...")
+    
+    async def wrapped_task(coro, name):
+        logger.info(f"[ORC] Starting task: {name}")
+        res = await coro
+        logger.info(f"[ORC] Finished task: {name}")
+        return res
+
     await asyncio.gather(
-        save_volume_delta(symbol, "1h"),
-        compute_and_save_profile(symbol, "1h"),
-        compute_and_save_profile(symbol, "4h"),
-        compute_and_save_profile(symbol, "1d"),
-        compute_and_save_orderflow(symbol, "1h"),
-        collect_and_save(symbol),
+        wrapped_task(save_volume_delta(symbol, "1h"), "save_volume_delta_1h"),
+        wrapped_task(compute_and_save_profile(symbol, "1h"), "save_profile_1h"),
+        wrapped_task(compute_and_save_profile(symbol, "4h"), "save_profile_4h"),
+        wrapped_task(compute_and_save_profile(symbol, "1d"), "save_profile_1d"),
+        wrapped_task(compute_and_save_orderflow(symbol, "1h"), "save_orderflow_1h"),
+        wrapped_task(collect_and_save(symbol), "collect_and_save_onchain"),
     )
     # Fetch current price
     conn = await get_db_conn()
@@ -155,8 +162,8 @@ async def node_analyst_team(state: TradingState) -> TradingState:
                 inst = analyst_map[parent_name]()
                 inst.name = c_name # Override name so it fetches challenger prompt
                 challenger_tasks.append(inst.analyze(symbol))
-    except Exception as e:
-        logger.error(f"[ORC] Challenger loop error: {e}")
+    except Exception:
+        logger.exception(f"[ORC] Challenger loop error")
     finally:
         await conn.close()
 

@@ -9,7 +9,7 @@ User=root
 WorkingDirectory=/opt/trade_server
 Environment=PYTHONPATH=/opt/trade_server
 EnvironmentFile=/opt/trade_server/.env
-ExecStartPre=/usr/bin/fuser -k 8000/tcp || true
+ExecStartPre=-/bin/sh -c 'fuser -k 8000/tcp'
 ExecStart=/opt/trade_env/bin/python api/server.py
 Restart=always
 RestartSec=5

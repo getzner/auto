@@ -55,8 +55,8 @@ async def orchestrator_loop() -> None:
                 logger.info(f"[MAIN] ── Cycle: {sym} (first={first_run}) ──")
                 try:
                     await run_cycle(sym)
-                except Exception as e:
-                    logger.error(f"[MAIN] Cycle error for {sym}: {e}")
+                except Exception:
+                    logger.exception(f"[MAIN] Cycle error for {sym}")
 
             first_run = False
 

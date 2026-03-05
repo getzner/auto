@@ -320,7 +320,7 @@ async def get_logs(n: int = 40, filter: str = "SCANNER|MONITOR|RISK|ORC|LLM|SKIL
     try:
         # Fetch the last 1000 lines from both services to ensure we have enough context after filtering
         result = subprocess.run(
-            ["journalctl", "-u", "trade-server", "-u", "trade-main", "-n", "1000", "--no-pager"],
+            ["journalctl", "-u", "trade-api", "-u", "trade-main", "-n", "1000", "--no-pager"],
             capture_output=True, text=True, timeout=5
         )
         all_lines = result.stdout.splitlines()
