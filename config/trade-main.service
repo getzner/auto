@@ -1,0 +1,17 @@
+[Unit]
+Description=Agentic Crypto Trade Main Orchestrator
+After=network.target trade-server.service
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/opt/trade_server
+EnvironmentFile=/opt/trade_server/.env
+ExecStart=/opt/trade_env/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

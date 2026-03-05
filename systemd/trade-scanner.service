@@ -1,0 +1,16 @@
+[Unit]
+Description=Agentic Crypto Trade Scanner (Setups)
+After=trade-api.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trade_server
+Environment="PATH=/opt/trade_env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=/opt/trade_server/.env
+ExecStart=/opt/trade_env/bin/python services/scanner_service.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

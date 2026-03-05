@@ -1,0 +1,19 @@
+[Unit]
+Description=Trade Server API
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trade_server
+Environment=PYTHONPATH=/opt/trade_server
+EnvironmentFile=/opt/trade_server/.env
+ExecStart=/opt/trade_env/bin/python api/server.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/trade_api.log
+StandardError=append:/var/log/trade_api.log
+
+[Install]
+WantedBy=multi-user.target

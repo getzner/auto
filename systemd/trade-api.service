@@ -1,0 +1,18 @@
+[Unit]
+Description=Agentic Crypto Trade Server API (FastAPI)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trade_server
+Environment="PATH=/opt/trade_env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=/opt/trade_server/.env
+ExecStartPre=/usr/bin/docker compose up -d
+ExecStart=/opt/trade_env/bin/python api/server.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

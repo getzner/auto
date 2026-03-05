@@ -1,0 +1,39 @@
+exchange:
+  name: binance              # binance | bybit | okx
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+  timeframe: 1h
+  testnet: false             # set true to use exchange testnet
+
+agents:
+  orchestrator_model: llama3.2:3b          # Ollama local — 3B fits in 8GB VPS
+  volume_analyst_llm: gemini-1.5-flash
+  orderflow_analyst_llm: gpt-4o-mini
+  vp_analyst_llm: gemini-1.5-flash
+  onchain_analyst_llm: claude-haiku-20240307
+  bull_researcher_llm: gpt-4o
+  bear_researcher_llm: claude-3-5-sonnet-20241022
+  trader_llm: llama3.2                  # Ollama (free)
+  risk_manager_llm: llama3.2            # Ollama (free)
+  portfolio_manager_llm: llama3.2       # Ollama (free)
+
+risk:
+  max_risk_per_trade_pct: 2.0
+  max_open_positions: 3
+  daily_drawdown_halt_pct: 5.0
+  paper_starting_balance: 10000         # USDT
+
+data:
+  candle_history_limit: 200             # candles per symbol for context
+  onchain_lookback_hours: 24
+  volume_profile_sessions: [1h, 4h, 1d]
+  orderflow_tick_size: 10               # price bucket size in USDT
+
+backtest:
+  start_date: "2023-01-01"
+  end_date: "2024-12-31"
+  initial_capital: 10000
+  commission_pct: 0.06                  # Binance taker fee
+
+mode: paper                             # paper | live

@@ -1,0 +1,68 @@
+# ── Memory budget for 8GB VPS ──────────────────────────────
+# Ollama llama3.2:3b : ~2.0 GB
+# Postgres           : ~0.5 GB
+# Redis              : ~0.3 GB
+# ChromaDB           : ~0.3 GB
+# Python process     : ~0.5 GB
+# OS + buffer        : ~1.5 GB
+# Total              : ~5.1 GB  (comfortable on 8GB)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trade_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-trade_db}
+      POSTGRES_USER: ${DB_USER:-trader}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      # Tune Postgres for low-memory server
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c effective_cache_size=256MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+      -c max_connections=20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trader}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: trade_redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    mem_limit: 300m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: trade_chroma
+    restart: unless-stopped
+    volumes:
+      - chromadata:/chroma/chroma
+    ports:
+      - "8001:8000"
+    mem_limit: 300m
+    environment:
+      CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER: ""
+
+volumes:
+  pgdata:
+  chromadata:
