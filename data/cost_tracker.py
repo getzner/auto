@@ -6,7 +6,7 @@ Stores in PostgreSQL. Prices are approximate and updated manually.
 
 from datetime import datetime, timezone
 from loguru import logger
-from data.db import get_db_conn
+from data.db import get_db_session
 
 # ── Pricing table (USD per 1M tokens) ────────────────────
 # Update prices here when providers change their rates
@@ -55,72 +55,71 @@ async def record_cost(
 ) -> None:
     """Save a single LLM call cost record to the database."""
     cost_usd = estimate_cost(model, input_tokens, output_tokens)
-    conn = await get_db_conn()
     try:
-        await conn.execute(
-            """
-            INSERT INTO llm_costs
-                (ts, agent_name, model, symbol, input_tokens, output_tokens, cost_usd, decision_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            """,
-            datetime.now(timezone.utc),
-            agent_name, model, symbol,
-            input_tokens, output_tokens, cost_usd,
-            decision_id,
-        )
-        logger.debug(
-            f"[COST] {agent_name} | {model} | in={input_tokens} out={output_tokens} "
-            f"| ${cost_usd:.6f}"
-        )
+        async with get_db_session() as conn:
+            await conn.execute(
+                """
+                INSERT INTO llm_costs
+                    (ts, agent_name, model, symbol, input_tokens, output_tokens, cost_usd, decision_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                datetime.now(timezone.utc),
+                agent_name, model, symbol,
+                input_tokens, output_tokens, cost_usd,
+                decision_id,
+            )
+            logger.debug(
+                f"[COST] {agent_name} | {model} | in={input_tokens} out={output_tokens} "
+                f"| ${cost_usd:.6f}"
+            )
     except Exception as e:
         logger.error(f"[COST] Failed to record cost: {e}")
-    finally:
-        await conn.close()
 
 
 async def get_cost_summary() -> dict:
     """Return cost summary stats for the dashboard."""
-    conn = await get_db_conn()
     try:
-        # Total costs per agent
-        by_agent = await conn.fetch(
-            """
-            SELECT agent_name, model,
-                   COUNT(*)           AS calls,
-                   SUM(input_tokens)  AS total_input_tokens,
-                   SUM(output_tokens) AS total_output_tokens,
-                   SUM(cost_usd)      AS total_cost_usd
-            FROM llm_costs
-            GROUP BY agent_name, model
-            ORDER BY total_cost_usd DESC
-            """
-        )
-        # Costs per day (last 30 days)
-        by_day = await conn.fetch(
-            """
-            SELECT DATE(ts) AS day, SUM(cost_usd) AS daily_cost
-            FROM llm_costs
-            WHERE ts >= NOW() - INTERVAL '30 days'
-            GROUP BY DATE(ts)
-            ORDER BY day
-            """
-        )
-        # Costs per cycle (per decision)
-        by_cycle = await conn.fetch(
-            """
-            SELECT decision_id, SUM(cost_usd) AS cycle_cost, MIN(ts) AS ts
-            FROM llm_costs
-            WHERE decision_id IS NOT NULL
-            GROUP BY decision_id
-            ORDER BY ts DESC LIMIT 20
-            """
-        )
-        # Totals
-        totals = await conn.fetchrow(
-            "SELECT SUM(cost_usd) AS total, COUNT(*) AS calls FROM llm_costs"
-        )
-    finally:
-        await conn.close()
+        async with get_db_session() as conn:
+            # Total costs per agent
+            by_agent = await conn.fetch(
+                """
+                SELECT agent_name, model,
+                       COUNT(*)           AS calls,
+                       SUM(input_tokens)  AS total_input_tokens,
+                       SUM(output_tokens) AS total_output_tokens,
+                       SUM(cost_usd)      AS total_cost_usd
+                FROM llm_costs
+                GROUP BY agent_name, model
+                ORDER BY total_cost_usd DESC
+                """
+            )
+            # Costs per day (last 30 days)
+            by_day = await conn.fetch(
+                """
+                SELECT DATE(ts) AS day, SUM(cost_usd) AS daily_cost
+                FROM llm_costs
+                WHERE ts >= NOW() - INTERVAL '30 days'
+                GROUP BY DATE(ts)
+                ORDER BY day
+                """
+            )
+            # Costs per cycle (per decision)
+            by_cycle = await conn.fetch(
+                """
+                SELECT decision_id, SUM(cost_usd) AS cycle_cost, MIN(ts) AS ts
+                FROM llm_costs
+                WHERE decision_id IS NOT NULL
+                GROUP BY decision_id
+                ORDER BY ts DESC LIMIT 20
+                """
+            )
+            # Totals
+            totals = await conn.fetchrow(
+                "SELECT SUM(cost_usd) AS total, COUNT(*) AS calls FROM llm_costs"
+            )
+    except Exception as e:
+        logger.error(f"[COST] Failed to fetch cost summary: {e}")
+        return {"by_agent":[], "by_day":[], "by_cycle":[], "total_usd":0, "total_calls":0}
 
     return {
         "by_agent":  [dict(r) for r in by_agent],

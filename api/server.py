@@ -59,77 +59,78 @@ async def lifespan(app):
         logger.warning(f"[SERVER] Could not write new PID file: {e}")
 
     # ── Database Migration ────────────────────────────────
-    from data.db import get_db_conn
-    conn = await get_db_conn()
+    from data.db import get_db_session
     try:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS skill_outcomes (
-                id SERIAL PRIMARY KEY,
-                ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                decision_id INTEGER,
-                skill_id TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                signal TEXT,
-                confidence INTEGER,
-                reasoning TEXT,
-                price_at_analysis FLOAT,
-                price_after_1h FLOAT,
-                price_after_4h FLOAT,
-                user_rating INTEGER DEFAULT 0,
-                is_gold_standard BOOLEAN DEFAULT FALSE
-            );
-            CREATE INDEX IF NOT EXISTS idx_skill_outcomes_skill_id ON skill_outcomes(skill_id);
-            CREATE INDEX IF NOT EXISTS idx_skill_outcomes_decision_id ON skill_outcomes(decision_id);
+        async with get_db_session() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS skill_outcomes (
+                    id SERIAL PRIMARY KEY,
+                    ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    decision_id INTEGER,
+                    skill_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    signal TEXT,
+                    confidence INTEGER,
+                    reasoning TEXT,
+                    price_at_analysis FLOAT,
+                    price_after_1h FLOAT,
+                    price_after_4h FLOAT,
+                    user_rating INTEGER DEFAULT 0,
+                    is_gold_standard BOOLEAN DEFAULT FALSE
+                );
+                CREATE INDEX IF NOT EXISTS idx_skill_outcomes_skill_id ON skill_outcomes(skill_id);
+                CREATE INDEX IF NOT EXISTS idx_skill_outcomes_decision_id ON skill_outcomes(decision_id);
 
-            CREATE TABLE IF NOT EXISTS system_config (
-                key TEXT PRIMARY KEY,
-                value JSONB,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
+                CREATE TABLE IF NOT EXISTS system_config (
+                    key TEXT PRIMARY KEY,
+                    value JSONB,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
 
-            CREATE TABLE IF NOT EXISTS challenger_results (
-                id SERIAL PRIMARY KEY,
-                ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                symbol TEXT NOT NULL,
-                challenger_name TEXT NOT NULL,
-                signal TEXT,
-                confidence INTEGER,
-                reasoning TEXT
-            );
+                CREATE TABLE IF NOT EXISTS challenger_results (
+                    id SERIAL PRIMARY KEY,
+                    ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    symbol TEXT NOT NULL,
+                    challenger_name TEXT NOT NULL,
+                    signal TEXT,
+                    confidence INTEGER,
+                    reasoning TEXT
+                );
 
-            CREATE TABLE IF NOT EXISTS agent_prompts (
-                agent_name TEXT PRIMARY KEY,
-                prompt_text TEXT NOT NULL,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
+                CREATE TABLE IF NOT EXISTS agent_prompts (
+                    agent_name TEXT PRIMARY KEY,
+                    prompt_text TEXT NOT NULL,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
 
-            CREATE TABLE IF NOT EXISTS human_feedback (
-                id SERIAL PRIMARY KEY,
-                ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                decision_id INTEGER,
-                feedback_text TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                optimizer_note TEXT
-            );
-        """)
-        logger.info("[SERVER] Database migrations complete.")
+                CREATE TABLE IF NOT EXISTS human_feedback (
+                    id SERIAL PRIMARY KEY,
+                    ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    decision_id INTEGER,
+                    feedback_text TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    optimizer_note TEXT
+                );
+            """)
+            logger.info("[SERVER] Database migrations complete.")
     except Exception as e:
         logger.error(f"[SERVER] Migration error: {e}")
-    finally:
-        await conn.close()
 
     symbols = os.getenv("SYMBOLS", "BTC/USDT,ETH/USDT").split(",")
     
     # Background monitor and scanner loops have been moved to decoupled services
     # `trade-data`, `trade-monitor`, and `trade-scanner` to prevent port 8000 ghosts.
     
+    from data.db import log_pool_stats
+    pool_stats_task = asyncio.create_task(log_pool_stats())
     hb_monitor_task = asyncio.create_task(check_heartbeat_loop())
-    logger.info("[SERVER] Self-healing heartbeat monitor started")
+    logger.info("[SERVER] Self-healing heartbeat monitor & DB Pool Stats started")
     yield
     # ── Cleanup ───────────────────────────────────────────
     if os.path.exists(PID_FILE):
         os.remove(PID_FILE)
     hb_monitor_task.cancel()
+    pool_stats_task.cancel()
     logger.info("[SERVER] API Shutdown complete")
 
 async def check_heartbeat_loop():
@@ -202,9 +203,9 @@ async def health():
 
     # Check DB
     try:
-        conn = await get_db_conn()
-        await conn.fetchval("SELECT 1")
-        await conn.close()
+        from data.db import get_db_session
+        async with get_db_session(timeout=3.0) as conn:
+            await conn.fetchval("SELECT 1")
         services["postgres"] = "ok"
     except Exception as e:
         services["postgres"] = f"error: {e}"
@@ -246,50 +247,49 @@ async def health():
 @app.get("/recent-trades")
 async def recent_trades():
     """Last 20 closed positions with trade details."""
-    conn = await get_db_conn()
+    from data.db import get_db_session
     try:
-        rows = await conn.fetch("""
-            SELECT id, symbol, side, entry_price, pnl_usdt, opened_at, closed_at
-            FROM positions
-            WHERE status='closed'
-            ORDER BY closed_at DESC NULLS LAST
-            LIMIT 20
-        """)
-        trades = []
-        for r in rows:
-            entry = float(r["entry_price"] or 0)
-            pnl   = float(r["pnl_usdt"]   or 0)
-            trades.append({
-                "id":        r["id"],
-                "symbol":    r["symbol"],
-                "side":      r["side"],
-                "entry":     round(entry, 2),
-                "close":     0,
-                "size_usdt": 0,
-                "pnl_usdt":  round(pnl, 2),
-                "pnl_pct":   0,
-                "fee_usdt":  0,
-                "reason":    "closed",
-                "opened_at": r["opened_at"].isoformat() if r["opened_at"] else None,
-                "closed_at": r["closed_at"].isoformat() if r["closed_at"] else None,
-            })
-        wins       = sum(1 for t in trades if t["pnl_usdt"] > 0)
-        total      = len(trades)
-        total_pnl  = sum(t["pnl_usdt"]  for t in trades)
-        total_fees = sum(t["fee_usdt"]   for t in trades)
-        return {
-            "trades":     trades,
-            "total":      total,
-            "wins":       wins,
-            "win_rate":   round(wins / total * 100, 1) if total else 0,
-            "total_pnl":  round(total_pnl,  2),
-            "total_fees": round(total_fees, 4),
-        }
+        async with get_db_session() as conn:
+            rows = await conn.fetch("""
+                SELECT id, symbol, side, entry_price, pnl_usdt, opened_at, closed_at
+                FROM positions
+                WHERE status='closed'
+                ORDER BY closed_at DESC NULLS LAST
+                LIMIT 20
+            """)
+            trades = []
+            for r in rows:
+                entry = float(r["entry_price"] or 0)
+                pnl   = float(r["pnl_usdt"]   or 0)
+                trades.append({
+                    "id":        r["id"],
+                    "symbol":    r["symbol"],
+                    "side":      r["side"],
+                    "entry":     round(entry, 2),
+                    "close":     0,
+                    "size_usdt": 0,
+                    "pnl_usdt":  round(pnl, 2),
+                    "pnl_pct":   0,
+                    "fee_usdt":  0,
+                    "reason":    "closed",
+                    "opened_at": r["opened_at"].isoformat() if r["opened_at"] else None,
+                    "closed_at": r["closed_at"].isoformat() if r["closed_at"] else None,
+                })
+            wins       = sum(1 for t in trades if t["pnl_usdt"] > 0)
+            total      = len(trades)
+            total_pnl  = sum(t["pnl_usdt"]  for t in trades)
+            total_fees = sum(t["fee_usdt"]   for t in trades)
+            return {
+                "trades":     trades,
+                "total":      total,
+                "wins":       wins,
+                "win_rate":   round(wins / total * 100, 1) if total else 0,
+                "total_pnl":  round(total_pnl,  2),
+                "total_fees": round(total_fees, 4),
+            }
     except Exception as e:
         return {"trades": [], "total": 0, "wins": 0, "win_rate": 0,
                 "total_pnl": 0, "total_fees": 0, "error": str(e)}
-    finally:
-        await conn.close()
 
 
 # ── Live Log Viewer ───────────────────────────────────────
@@ -323,22 +323,20 @@ async def get_logs(n: int = 40, filter: str = "SCANNER|MONITOR|RISK|ORC|LLM|SKIL
 
 @app.get("/status")
 async def get_status():
-    conn = await get_db_conn()
-    try:
-        open_pos = await conn.fetch(
-            "SELECT * FROM positions WHERE status='open' ORDER BY opened_at DESC"
-        )
-        closed_today = await conn.fetch(
-            """
-            SELECT symbol, side, pnl_usdt FROM positions
-            WHERE status='closed' AND closed_at >= NOW() - INTERVAL '24 hours'
-            """
-        )
-        balance_row = await conn.fetchrow(
-            "SELECT COALESCE(SUM(pnl_usdt), 0) AS p FROM positions WHERE status='closed'"
-        )
-    finally:
-        await conn.close()
+    from data.db import get_db_session
+    async with get_db_session() as conn:
+            open_pos = await conn.fetch(
+                "SELECT * FROM positions WHERE status='open' ORDER BY opened_at DESC"
+            )
+            closed_today = await conn.fetch(
+                """
+                SELECT symbol, side, pnl_usdt FROM positions
+                WHERE status='closed' AND closed_at >= NOW() - INTERVAL '24 hours'
+                """
+            )
+            balance_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(pnl_usdt), 0) AS p FROM positions WHERE status='closed'"
+            )
 
     import decimal, json
     from datetime import datetime, date
@@ -392,30 +390,26 @@ async def get_status():
 
 @app.get("/decisions")
 async def get_decisions(limit: int = 20, symbol: str | None = None):
-    conn = await get_db_conn()
-    try:
-        if symbol:
-            rows = await conn.fetch(
-                "SELECT id,ts,symbol,direction,confidence,approved,executed FROM decisions "
-                "WHERE symbol=$1 ORDER BY ts DESC LIMIT $2", symbol, limit
-            )
-        else:
-            rows = await conn.fetch(
-                "SELECT id,ts,symbol,direction,confidence,approved,executed FROM decisions "
-                "ORDER BY ts DESC LIMIT $1", limit
-            )
-    finally:
-        await conn.close()
+    from data.db import get_db_session
+    async with get_db_session() as conn:
+            if symbol:
+                rows = await conn.fetch(
+                    "SELECT id,ts,symbol,direction,confidence,approved,executed FROM decisions "
+                    "WHERE symbol=$1 ORDER BY ts DESC LIMIT $2", symbol, limit
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT id,ts,symbol,direction,confidence,approved,executed FROM decisions "
+                    "ORDER BY ts DESC LIMIT $1", limit
+                )
     return [dict(r) for r in rows]
 
 
 @app.get("/decisions/{decision_id}")
 async def get_decision_detail(decision_id: int):
-    conn = await get_db_conn()
-    try:
-        row = await conn.fetchrow("SELECT * FROM decisions WHERE id=$1", decision_id)
-    finally:
-        await conn.close()
+    from data.db import get_db_session
+    async with get_db_session() as conn:
+            row = await conn.fetchrow("SELECT * FROM decisions WHERE id=$1", decision_id)
     if not row:
         raise HTTPException(status_code=404, detail="Decision not found")
     return dict(row)
@@ -440,32 +434,28 @@ async def manual_run(req: RunRequest):
 @app.get("/journal")
 async def get_journal(limit: int = 50):
     """Fetch recent AI trade journals."""
-    conn = await get_db_conn()
-    try:
-        rows = await conn.fetch(
-            """
-            SELECT j.*, p.symbol, p.side, p.pnl_usdt 
-            FROM trade_journal j
-            JOIN positions p ON j.position_id = p.id
-            ORDER BY j.ts DESC LIMIT $1
-            """,
-            limit
-        )
-    finally:
-        await conn.close()
+    from data.db import get_db_session
+    async with get_db_session() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT j.*, p.symbol, p.side, p.pnl_usdt 
+                FROM trade_journal j
+                JOIN positions p ON j.position_id = p.id
+                ORDER BY j.ts DESC LIMIT $1
+                """,
+                limit
+            )
     return [dict(r) for r in rows]
 
 @app.get("/journal/{position_id}")
 async def get_journal_detail(position_id: int):
     """Fetch detailed AI journal for a specific position."""
-    conn = await get_db_conn()
-    try:
-        row = await conn.fetchrow(
-            "SELECT * FROM trade_journal WHERE position_id=$1",
-            position_id
-        )
-    finally:
-        await conn.close()
+    from data.db import get_db_session
+    async with get_db_session() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM trade_journal WHERE position_id=$1",
+                position_id
+            )
     if not row:
         raise HTTPException(status_code=404, detail="Journal entry not found")
     return dict(row)
@@ -485,13 +475,12 @@ async def trigger_meta_review(req: RunRequest):
 @app.get("/accuracy")
 async def get_agent_accuracy():
     """Get historical accuracy (hit rate) per analyst agent."""
-    conn = await get_db_conn()
+    from data.db import get_db_session
     try:
-        rows = await conn.fetch("SELECT * FROM agent_accuracy")
+        async with get_db_session() as conn:
+            rows = await conn.fetch("SELECT * FROM agent_accuracy")
     except Exception:
         return {"error": "Run scripts/add_meta_reviews.sql first to create the agent_accuracy view"}
-    finally:
-        await conn.close()
     return [dict(r) for r in rows]
 
 from pydantic import BaseModel
@@ -503,23 +492,21 @@ class FeedbackPayload(BaseModel):
 async def submit_feedback(payload: FeedbackPayload):
     from data.db import get_db_conn
     import asyncio
-    conn = await get_db_conn()
-    try:
-        await conn.execute(
-            "INSERT INTO human_feedback (decision_id, feedback_text) VALUES ($1, $2)",
-            payload.decision_id, payload.feedback_text
-        )
+    from data.db import get_db_session
+    async with get_db_session() as conn:
+            await conn.execute(
+                "INSERT INTO human_feedback (decision_id, feedback_text) VALUES ($1, $2)",
+                payload.decision_id, payload.feedback_text
+            )
         
-        # Trigger the meta optimizer gently in the background
-        try:
-            from agents.meta_agent import MetaAgent
-            asyncio.create_task(MetaAgent().process_human_feedback())
-        except Exception as e:
-            logger.error(f"Failed to trigger meta optimizer: {e}")
+            # Trigger the meta optimizer gently in the background
+            try:
+                from agents.meta_agent import MetaAgent
+                asyncio.create_task(MetaAgent().process_human_feedback())
+            except Exception as e:
+                logger.error(f"Failed to trigger meta optimizer: {e}")
             
-        return {"status": "success"}
-    finally:
-        await conn.close()
+            return {"status": "success"}
 
 
 if __name__ == "__main__":

@@ -687,216 +687,255 @@ let dailyChartInst, agentChartInst;
 let currentConfig = {};
 let logPaused = false;
 
+const safeFetch = async (url, fallback) => {
+    try {
+        const r = await fetch(url);
+        if (!r.ok) {
+            if (r.status === 503) {
+                const el = document.getElementById('lastUpdate');
+                if (el) el.innerHTML = `<span style="color:var(--warn)">&#9888; Database temporarily unavailable &#8211; retrying...</span>`;
+            }
+            throw new Error(`HTTP ${r.status}`);
+        }
+        return await r.json();
+    } catch(e) {
+        console.warn(`Fetch failed for ${url}:`, e);
+        return fallback;
+    }
+};
+
 async function load() {
   try {
-    // Independent fetches &#8212; a single failure won't break the rest
-    const safeFetch = (url, fallback) => fetch(url).then(r => r.ok ? r.json() : fallback).catch(() => fallback);
-    const [costs, status, trades, challengers, sconfig] = await Promise.all([
-      safeFetch('/costs',             { total_usd: 0, total_calls: 0, by_day: [], by_agent: [] }),
-      safeFetch('/status',            { equity_usdt: 0, pnl_total: 0, pnl_today: 0 }),
-      safeFetch('/recent-trades',     { trades: [], total: 0, wins: 0, win_rate: 0, total_pnl: 0, total_fees: 0 }),
-      safeFetch('/api/config/challengers', []),
-      safeFetch('/api/config/system',      {})
-    ]);
-
-    // &#9472;&#9472; Top stats &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
-    document.getElementById('totalCost').textContent  = fmtBig(costs.total_usd);
-    document.getElementById('totalCalls').textContent = fmtNum(costs.total_calls);
-    document.getElementById('equity').textContent     = fmtBig(status.equity_usdt);
-    document.getElementById('totalPnl').textContent   = `Total P&L: ${fmtBig(status.pnl_total)}`;
-    const pnlToday = status.pnl_today || 0;
-    const el = document.getElementById('todayPnl');
-    el.textContent = fmtBig(pnlToday);
-    el.style.color = pnlToday >= 0 ? 'var(--accent2)' : 'var(--danger)';
-    document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
-
-    // &#9472;&#9472; System Info &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
-    if (status.pid) document.getElementById('serverPid').textContent = status.pid;
-    if (status.uptime) document.getElementById('uptime').textContent = status.uptime;
-
-    // &#9472;&#9472; Challenger Table &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
-    const ctbody = document.getElementById('challengerTableBody');
-    ctbody.innerHTML = '';
-    challengers.forEach(c => {
-        const sigColor = c.signal === 'BULLISH' ? 'var(--accent2)' : (c.signal === 'BEARISH' ? 'var(--danger)' : 'var(--muted)');
-        ctbody.innerHTML += `<tr>
-            <td style="color:var(--muted)">${new Date(c.ts).toLocaleTimeString()}</td>
-            <td><strong>${c.symbol}</strong></td>
-            <td><span class="badge badge-purple">${c.challenger_name}</span></td>
-            <td style="color:${sigColor}; font-weight:700">${c.signal}</td>
-            <td>${c.confidence}/10</td>
-            <td>
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px">
-                    <span style="font-size:.7rem; color:var(--muted); max-width:250px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis" title="${c.reasoning}">${c.reasoning}</span>
-                    <div style="display:flex; gap:4px; flex-shrink:0">
-                        <button class="btn-feedback" onclick="submitFeedback('${c.challenger_name}', 1, this)">&#128077;</button>
-                        <button class="btn-feedback down" onclick="submitFeedback('${c.challenger_name}', -1, this)">&#128078;</button>
-                    </div>
-                </div>
-            </td>
-        </tr>`;
-    });
-    if (!challengers.length) ctbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px; color:var(--muted)">No challenger signals yet.</td></tr>';
-
-    // &#9472;&#9472; System Config Hydration &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
-    if (Object.keys(sconfig).length > 0) {
-        const rl = sconfig.risk_limits || {};
-        const st = sconfig.scanner_thresholds || {};
-        
-        // Only update if not currently editing (basic prevention)
-        if (document.activeElement.id !== 'conf-min') document.getElementById('conf-min').value = rl.min_confidence || 7.0;
-        if (document.activeElement.id !== 'risk-max') document.getElementById('risk-max').value = rl.max_risk_pct || 2.0;
-        if (document.activeElement.id !== 'pos-max')  document.getElementById('pos-max').value  = rl.max_positions || 3;
-        
-        if (document.activeElement.id !== 'scan-vol')  document.getElementById('scan-vol').value  = st.volume_spike_multi || 3.0;
-        if (document.activeElement.id !== 'scan-trig') document.getElementById('scan-trig').value = st.trigger_threshold || 2;
-        if (document.activeElement.id !== 'scan-z')    document.getElementById('scan-z').value    = st.volatility_zscore || 2.0;
-    }
-
-    // &#9472;&#9472; Trade performance stats &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
-    const wr       = trades.win_rate || 0;
-    const fees     = trades.total_fees || 0;
-    const closedPnl= trades.total_pnl || 0;
-    const netPnl   = closedPnl - fees;
-
-    document.getElementById('winRate').textContent     = wr.toFixed(1) + '%';
-    document.getElementById('winRate').style.color     = wr >= 50 ? 'var(--accent2)' : 'var(--danger)';
-    document.getElementById('winRateSub').textContent  = `${trades.wins || 0}/${trades.total || 0} trades`;
-    document.getElementById('tradeFees').textContent   = fmtBig(fees);
-    const cpEl = document.getElementById('closedPnl');
-    cpEl.textContent = fmtBig(Math.abs(closedPnl));
-    cpEl.style.color = closedPnl >= 0 ? 'var(--accent2)' : 'var(--danger)';
-    const npEl = document.getElementById('netPnl');
-    npEl.textContent = (netPnl >= 0 ? '+' : '') + netPnl.toFixed(2);
-    npEl.style.color = netPnl >= 0 ? 'var(--accent2)' : 'var(--danger)';
-
-    // &#9472;&#9472; Daily chart &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
-    const days  = costs.by_day.map(d => d.day.slice(5));
-    const dCost = costs.by_day.map(d => parseFloat(d.cost).toFixed(5));
-    try {
-      if (dailyChartInst) dailyChartInst.destroy();
-      dailyChartInst = new Chart(document.getElementById('dailyChart'), {
-        type: 'bar',
-        data: { labels: days, datasets: [{ label: 'USD', data: dCost, backgroundColor: 'rgba(99,102,241,.6)', borderColor: '#6366f1', borderWidth: 1, borderRadius: 4 }] },
-        options: { plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'#64748b',font:{size:10}}},y:{ticks:{color:'#64748b',font:{size:10}},grid:{color:'rgba(255,255,255,.05)'}}}, responsive:true, maintainAspectRatio:true }
-      });
-    } catch(chartErr) { console.warn('Daily chart error:', chartErr); }
-
-    // Agent donut
-    const agents = costs.by_agent.map(a => a.agent_name);
-    const aCosts = costs.by_agent.map(a => parseFloat(a.total_cost_usd));
-    const colors = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#84cc16','#f97316'];
-    try {
-      if (agentChartInst) agentChartInst.destroy();
-      agentChartInst = new Chart(document.getElementById('agentChart'), {
-        type: 'doughnut',
-        data: { labels: agents, datasets:[{ data: aCosts, backgroundColor: colors, borderWidth: 0 }] },
-        options: { plugins:{legend:{position:'right',labels:{color:'#94a3b8',font:{size:11},boxWidth:12}}}, responsive:true, maintainAspectRatio:true }
-      });
-    } catch(chartErr) { console.warn('Agent chart error:', chartErr); }
-
-    // &#9472;&#9472; Agent cost table &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
-    const total_usd = costs.total_usd || 0.000001;
-    const tbody = document.getElementById('agentTableBody');
-    tbody.innerHTML = '';
-    costs.by_agent.forEach((a) => {
-      const pct = (parseFloat(a.total_cost_usd)/total_usd*100).toFixed(1);
-      const isLocal = a.model.includes('llama') || a.model.includes('mistral');
-      tbody.innerHTML += `<tr>
-        <td><strong>${a.agent_name}</strong></td>
-        <td><span class="badge ${isLocal?'badge-green':'badge-purple'}">${a.model}</span></td>
-        <td>${fmtNum(a.calls)}</td>
-        <td>${fmtNum(a.total_input_tokens)}</td>
-        <td>${fmtNum(a.total_output_tokens)}</td>
-        <td style="color:${parseFloat(a.total_cost_usd)>0.01?'#f59e0b':'#f1f5f9'}">${fmt(a.total_cost_usd)}</td>
-        <td style="min-width:80px">
-          <div style="display:flex;align-items:center;gap:6px">
-            <div class="bar-wrap"><div class="bar-fill" style="width:${pct}%"></div></div>
-            <span style="font-size:.7rem;color:var(--muted)">${pct}%</span>
-          </div>
-        </td>
-      </tr>`;
-    });
-    if (!costs.by_agent.length) tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:24px">No data yet &#8212; run the first agent cycle.</td></tr>';
-
-    // &#9472;&#9472; Recent trades table &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
-    const ttbody = document.getElementById('tradesTableBody');
-    ttbody.innerHTML = '';
-    (trades.trades || []).forEach(t => {
-      const pnlColor = t.pnl_usdt >= 0 ? 'var(--accent2)' : 'var(--danger)';
-      const sideClass = t.side === 'long' ? 'badge-green' : 'badge-warn';
-      const reasonBadge = {
-        tp1: 'badge-green', tp2: 'badge-green',
-        sl: 'badge-warn', trailing_stop: 'badge-warn'
-      }[t.reason] || 'badge-purple';
-      const closedAt = t.closed_at ? new Date(t.closed_at).toLocaleString('nl-BE',{dateStyle:'short',timeStyle:'short'}) : '&#8212;';
-      ttbody.innerHTML += `<tr>
-        <td style="color:var(--muted)">${t.id}</td>
-        <td><strong>${t.symbol}</strong></td>
-        <td><span class="badge ${sideClass}">${t.side.toUpperCase()}</span></td>
-        <td>$${t.entry.toLocaleString()}</td>
-        <td>$${t.close.toLocaleString()}</td>
-        <td>$${t.size_usdt}</td>
-        <td style="color:${pnlColor};font-weight:600">${fmtPnl(t.pnl_usdt)}</td>
-        <td style="color:${pnlColor}">${fmtPnl(t.pnl_pct)}%</td>
-        <td style="color:var(--muted)">$${t.fee_usdt}</td>
-        <td><span class="badge ${reasonBadge}">${t.reason}</span></td>
-        <td style="color:var(--muted);font-size:.75rem">${closedAt}</td>
-      </tr>`;
-    });
-    if (!trades.trades || !trades.trades.length) {
-      ttbody.innerHTML = '<tr><td colspan="11" style="color:var(--muted);text-align:center;padding:24px">Nog geen gesloten trades.</td></tr>';
-    }
-
-    // &#9472;&#9472; Trade Journal &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
-    const journalEntries = await safeFetch('/journal?limit=6', []);
-    const jGrid = document.getElementById('journalGrid');
-    jGrid.innerHTML = '';
+    const lastUpdateNode = document.getElementById('lastUpdate');
     
-    journalEntries.forEach(j => {
-      const score = j.performance_score || 0;
-      const scoreClass = score >= 70 ? 'high-score' : (score < 40 ? 'low-score' : '');
-      const lessons = JSON.parse(j.lessons_learned || '[]');
-      const pnl = parseFloat(j.pnl_usdt) || 0;
-      
-      const card = document.createElement('div');
-      card.className = `journal-card ${scoreClass}`;
-      card.innerHTML = `
-        <div class="journal-header">
-          <div>
-            <strong style="font-size: .9rem">${j.symbol}</strong>
-            <span class="badge ${j.side === 'long' ? 'badge-green' : 'badge-warn'}" style="margin-left:6px">${j.side.toUpperCase()}</span>
-          </div>
-          <div class="journal-score" style="color:${score >= 70 ? 'var(--accent2)' : (score < 40 ? 'var(--danger)' : 'var(--warn)')}">
-            ${score}/100
-          </div>
-        </div>
-        <div class="journal-summary">${j.summary}</div>
-        <ul class="journal-lessons">
-          ${lessons.map(l => `<li>${l}</li>`).join('')}
-        </ul>
-        <div class="journal-critique">
-          <strong>Analyst Critique:</strong> ${j.agent_critique}
-        </div>
-        <div style="margin-top:12px; font-size:.7rem; color:var(--muted); display:flex; justify-content:space-between">
-          <span>Profit: <span style="color:${pnl >= 0 ? 'var(--accent2)' : 'var(--danger)'}">${fmtPnl(pnl)} USDT</span></span>
-          <span>${new Date(j.ts).toLocaleDateString()}</span>
-        </div>
-        <div style="margin-top:16px; display:flex; flex-direction:column; gap:8px;">
-            <input type="text" id="fb-${j.decision_id}" placeholder="Provide feedback (e.g. You closed too early because...)" style="width:100%; font-size: 0.75rem; padding: 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: var(--text); outline: none;">
-            <button class="btn-save" style="font-size: 0.7rem; padding: 4px; align-self: flex-end;" onclick="sendFeedback(${j.decision_id})">Send to Meta-Optimizer</button>
-        </div>
-      `;
-      jGrid.appendChild(card);
-    });
-    
-    if (!journalEntries.length) {
-      jGrid.innerHTML = '<div style="color:var(--muted); font-size:.8rem; padding: 20px; grid-column: 1/-1; text-align:center">No journal entries yet. Close a trade to generate one!</div>';
-    }
+    // 1. Core Status & Stats
+    safeFetch('/status', { equity_usdt: 0, pnl_total: 0, pnl_today: 0 }).then(status => {
+        const eqNode = document.getElementById('equity');
+        if (eqNode) eqNode.textContent = fmtBig(status.equity_usdt);
+        const pnlNode = document.getElementById('totalPnl');
+        if (pnlNode) pnlNode.textContent = `Total P&L: ${fmtBig(status.pnl_total)}`;
+        
+        const pnlToday = status.pnl_today || 0;
+        const el = document.getElementById('todayPnl');
+        if (el) {
+            el.textContent = fmtBig(pnlToday);
+            el.style.color = pnlToday >= 0 ? 'var(--accent2)' : 'var(--danger)';
+        }
+        
+        if (status.pid) {
+            const pidNode = document.getElementById('serverPid');
+            if (pidNode) pidNode.textContent = status.pid;
+        }
+        if (status.uptime) {
+            const utNode = document.getElementById('uptime');
+            if (utNode) utNode.textContent = status.uptime;
+        }
+        if (lastUpdateNode) lastUpdateNode.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    }).catch(e => console.error("Status update error:", e));
 
-  } catch(e) { 
-    console.error("DASHBOARD ERROR:", e); 
-    document.getElementById('lastUpdate').textContent = '&#9888; Render Error: ' + e.message;
+    // 2. Costs Breakdown
+    safeFetch('/costs', { total_usd: 0, total_calls: 0, by_day: [], by_agent: [] }).then(costs => {
+        const tcNode = document.getElementById('totalCost');
+        if (tcNode) tcNode.textContent = fmtBig(costs.total_usd);
+        const tcaNode = document.getElementById('totalCalls');
+        if (tcaNode) tcaNode.textContent = fmtNum(costs.total_calls);
+        
+        // Render daily chart
+        const days  = (costs.by_day || []).map(d => d.day.slice(5));
+        const dCost = (costs.by_day || []).map(d => parseFloat(d.cost).toFixed(5));
+        try {
+          if (dailyChartInst) dailyChartInst.destroy();
+          const chartCtx = document.getElementById('dailyChart');
+          if (chartCtx) {
+              dailyChartInst = new Chart(chartCtx, {
+                type: 'bar',
+                data: { labels: days, datasets: [{ label: 'USD', data: dCost, backgroundColor: 'rgba(99,102,241,.6)', borderColor: '#6366f1', borderWidth: 1, borderRadius: 4 }] },
+                options: { plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'#64748b',font:{size:10}}},y:{ticks:{color:'#64748b',font:{size:10}},grid:{color:'rgba(255,255,255,.05)'}}}, responsive:true, maintainAspectRatio:true }
+              });
+          }
+        } catch(chartErr) { console.warn('Daily chart error:', chartErr); }
+
+        // Render agents donut
+        const agents = (costs.by_agent || []).map(a => a.agent_name);
+        const aCosts = (costs.by_agent || []).map(a => parseFloat(a.total_cost_usd));
+        const colors = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#84cc16','#f97316'];
+        try {
+          if (agentChartInst) agentChartInst.destroy();
+          const chartCtx = document.getElementById('agentChart');
+          if (chartCtx) {
+              agentChartInst = new Chart(chartCtx, {
+                type: 'doughnut',
+                data: { labels: agents, datasets:[{ data: aCosts, backgroundColor: colors, borderWidth: 0 }] },
+                options: { plugins:{legend:{position:'right',labels:{color:'#94a3b8',font:{size:11},boxWidth:12}}}, responsive:true, maintainAspectRatio:true }
+              });
+          }
+        } catch(chartErr) { console.warn('Agent chart error:', chartErr); }
+
+        // Cost table
+        const total_usd = costs.total_usd || 0.000001;
+        const tbody = document.getElementById('agentTableBody');
+        if (tbody) {
+            tbody.innerHTML = '';
+            (costs.by_agent || []).forEach((a) => {
+              const pct = (parseFloat(a.total_cost_usd)/total_usd*100).toFixed(1);
+              const isLocal = a.model.includes('llama') || a.model.includes('mistral');
+              tbody.innerHTML += `<tr>
+                <td><strong>${a.agent_name}</strong></td>
+                <td><span class="badge ${isLocal?'badge-green':'badge-purple'}">${a.model}</span></td>
+                <td>${fmtNum(a.calls)}</td>
+                <td>${fmtNum(a.total_input_tokens)}</td>
+                <td>${fmtNum(a.total_output_tokens)}</td>
+                <td style="color:${parseFloat(a.total_cost_usd)>0.01?'#f59e0b':'#f1f5f9'}">${fmt(a.total_cost_usd)}</td>
+                <td style="min-width:80px">
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <div class="bar-wrap"><div class="bar-fill" style="width:${pct}%"></div></div>
+                    <span style="font-size:.7rem;color:var(--muted)">${pct}%</span>
+                  </div>
+                </td>
+              </tr>`;
+            });
+            if (!costs.by_agent.length) tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:24px">No costs data yet.</td></tr>';
+        }
+    }).catch(e => console.error("Costs update error:", e));
+
+    // 3. Trade Performance & Table
+    safeFetch('/recent-trades', { trades: [], total: 0, wins: 0, win_rate: 0, total_pnl: 0, total_fees: 0 }).then(trades => {
+        const wr       = trades.win_rate || 0;
+        const fees     = trades.total_fees || 0;
+        const closedPnl= trades.total_pnl || 0;
+        const netPnl   = closedPnl - fees;
+
+        const wrNode = document.getElementById('winRate');
+        if (wrNode) {
+            wrNode.textContent = wr.toFixed(1) + '%';
+            wrNode.style.color = wr >= 50 ? 'var(--accent2)' : 'var(--danger)';
+        }
+        const wrsNode = document.getElementById('winRateSub');
+        if (wrsNode) wrsNode.textContent = `${trades.wins || 0}/${trades.total || 0} trades`;
+        
+        const tfNode = document.getElementById('tradeFees');
+        if (tfNode) tfNode.textContent = fmtBig(fees);
+        
+        const cpEl = document.getElementById('closedPnl');
+        if (cpEl) {
+            cpEl.textContent = fmtBig(Math.abs(closedPnl));
+            cpEl.style.color = closedPnl >= 0 ? 'var(--accent2)' : 'var(--danger)';
+        }
+        
+        const npEl = document.getElementById('netPnl');
+        if (npEl) {
+            npEl.textContent = (netPnl >= 0 ? '+' : '') + netPnl.toFixed(2);
+            npEl.style.color = netPnl >= 0 ? 'var(--accent2)' : 'var(--danger)';
+        }
+
+        const ttbody = document.getElementById('tradesTableBody');
+        if (ttbody) {
+            ttbody.innerHTML = '';
+            (trades.trades || []).forEach(t => {
+              const pnlColor = t.pnl_usdt >= 0 ? 'var(--accent2)' : 'var(--danger)';
+              const sideClass = t.side === 'long' ? 'badge-green' : 'badge-warn';
+              const reasonBadge = { tp1: 'badge-green', tp2: 'badge-green', sl: 'badge-warn', trailing_stop: 'badge-warn' }[t.reason] || 'badge-purple';
+              const closedAt = t.closed_at ? new Date(t.closed_at).toLocaleString('nl-BE',{dateStyle:'short',timeStyle:'short'}) : '-';
+              ttbody.innerHTML += `<tr>
+                <td style="color:var(--muted)">${t.id}</td>
+                <td><strong>${t.symbol}</strong></td>
+                <td><span class="badge ${sideClass}">${t.side.toUpperCase()}</span></td>
+                <td>$${t.entry.toLocaleString()}</td>
+                <td>$${t.close.toLocaleString()}</td>
+                <td>$${t.size_usdt}</td>
+                <td style="color:${pnlColor};font-weight:600">${fmtPnl(t.pnl_usdt)}</td>
+                <td style="color:${pnlColor}">${fmtPnl(t.pnl_pct)}%</td>
+                <td style="color:var(--muted)">$${t.fee_usdt}</td>
+                <td><span class="badge ${reasonBadge}">${t.reason}</span></td>
+                <td style="color:var(--muted);font-size:.75rem">${closedAt}</td>
+              </tr>`;
+            });
+            if (!trades.trades || !trades.trades.length) ttbody.innerHTML = '<tr><td colspan="11" style="color:var(--muted);text-align:center;padding:24px">No trades yet.</td></tr>';
+        }
+    }).catch(e => console.error("Trades update error:", e));
+
+    // 4. Challengers
+    safeFetch('/api/config/challengers', []).then(challengers => {
+        const ctbody = document.getElementById('challengerTableBody');
+        if (ctbody) {
+            ctbody.innerHTML = '';
+            challengers.forEach(c => {
+                const sigColor = c.signal === 'BULLISH' ? 'var(--accent2)' : (c.signal === 'BEARISH' ? 'var(--danger)' : 'var(--muted)');
+                ctbody.innerHTML += `<tr>
+                    <td style="color:var(--muted)">${new Date(c.ts).toLocaleTimeString()}</td>
+                    <td><strong>${c.symbol}</strong></td>
+                    <td><span class="badge badge-purple">${c.challenger_name}</span></td>
+                    <td style="color:${sigColor}; font-weight:700">${c.signal}</td>
+                    <td>${c.confidence}/10</td>
+                    <td>
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px">
+                            <span style="font-size:.7rem; color:var(--muted); max-width:250px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis" title="${c.reasoning}">${c.reasoning}</span>
+                            <div style="display:flex; gap:4px; flex-shrink:0">
+                                <button class="btn-feedback" onclick="submitFeedback('${c.challenger_name}', 1, this)">\u2705</button>
+                                <button class="btn-feedback down" onclick="submitFeedback('${c.challenger_name}', -1, this)">\u274C</button>
+                            </div>
+                        </div>
+                    </td>
+                </tr>`;
+            });
+            if (!challengers.length) ctbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px; color:var(--muted)">No challenger signals yet.</td></tr>';
+        }
+    });
+
+    // 5. System config hydration
+    safeFetch('/api/config/system', {}).then(sconfig => {
+        if (Object.keys(sconfig).length > 0) {
+            const rl = sconfig.risk_limits || {};
+            const st = sconfig.scanner_thresholds || {};
+            if (document.activeElement.id !== 'conf-min') document.getElementById('conf-min').value = rl.min_confidence || 7.0;
+            if (document.activeElement.id !== 'risk-max') document.getElementById('risk-max').value = rl.max_risk_pct || 2.0;
+            if (document.activeElement.id !== 'pos-max')  document.getElementById('pos-max').value  = rl.max_positions || 3;
+            if (document.activeElement.id !== 'scan-vol')  document.getElementById('scan-vol').value  = st.volume_spike_multi || 3.0;
+            if (document.activeElement.id !== 'scan-trig') document.getElementById('scan-trig').value = st.trigger_threshold || 2;
+            if (document.activeElement.id !== 'scan-z')    document.getElementById('scan-z').value    = st.volatility_zscore || 2.0;
+        }
+    });
+
+    // --- Trade Journal ---
+    safeFetch('/journal?limit=6', []).then(journalEntries => {
+        const jGrid = document.getElementById('journalGrid');
+        if (!jGrid) return;
+        jGrid.innerHTML = '';
+        (journalEntries || []).forEach(j => {
+          const score = j.performance_score || 0;
+          const scoreClass = score >= 70 ? 'high-score' : (score < 40 ? 'low-score' : '');
+          const lessons = JSON.parse(j.lessons_learned || '[]');
+          const pnl = parseFloat(j.pnl_usdt) || 0;
+          
+          const card = document.createElement('div');
+          card.className = `journal-card ${scoreClass}`;
+          card.innerHTML = `
+            <div class="journal-header">
+              <div>
+                <strong style="font-size: .9rem">${j.symbol}</strong>
+                <span class="badge ${j.side === 'long' ? 'badge-green' : 'badge-warn'}" style="margin-left:6px">${j.side.toUpperCase()}</span>
+              </div>
+              <div class="journal-score" style="color:${score >= 70 ? 'var(--accent2)' : (score < 40 ? 'var(--danger)' : 'var(--warn)')}">
+                ${score}/100
+              </div>
+            </div>
+            <div class="journal-summary">${j.summary}</div>
+            <ul class="journal-lessons">${lessons.map(l => `<li>${l}</li>`).join('')}</ul>
+            <div class="journal-critique"><strong>Analyst Critique:</strong> ${j.agent_critique}</div>
+            <div style="margin-top:12px; font-size:.7rem; color:var(--muted); display:flex; justify-content:space-between">
+              <span>Profit: <span style="color:${pnl >= 0 ? 'var(--accent2)' : 'var(--danger)'}">${fmtPnl(pnl)} USDT</span></span>
+              <span>${new Date(j.ts).toLocaleDateString()}</span>
+            </div>
+          `;
+          jGrid.appendChild(card);
+        });
+        if (!journalEntries.length) jGrid.innerHTML = '<div style="color:var(--muted); font-size:.8rem; padding: 20px; grid-column: 1/-1; text-align:center">No journal entries yet.</div>';
+    });
+
+  } catch(err) { 
+    console.error("DASHBOARD FATAL ERROR:", err); 
+    const upd = document.getElementById('lastUpdate');
+    if (upd) upd.innerHTML = `<span style="color:var(--danger)">\u26A0 FATAL: ${err.message}</span>`;
   }
 }
 
@@ -1010,11 +1049,11 @@ async function saveSystemConfig() {
             body: JSON.stringify(payload)
         });
         if (res.ok) {
-            status.textContent = '&#9989; Updated live!';
-            setTimeout(() => { status.textContent = ''; }, 3000);
+            status.innerHTML = '&#9989; Updated live!';
+            setTimeout(() => { status.innerHTML = ''; }, 3000);
         } else { throw new Error("Fail"); }
     } catch(e) {
-        status.textContent = '&#10060; Error';
+        status.innerHTML = '&#10060; Error';
         btn.disabled = false;
     }
 }
@@ -1067,13 +1106,13 @@ async function saveAllConfig() {
             body: JSON.stringify({ overrides, active_skills, skill_model_overrides, active_core_agents })
         });
         if (res.ok) {
-            status.textContent = '&#9989; Saved! Changes active next cycle.';
+            status.innerHTML = '&#9989; Saved! Changes active next cycle.';
             status.style.color = 'var(--accent2)';
-            setTimeout(() => { status.textContent = ''; }, 5000);
+            setTimeout(() => { status.innerHTML = ''; }, 5000);
             loadConfig(); // Refresh local state
         } else { throw new Error("Fail"); }
     } catch(e) {
-        status.textContent = '&#10060; Error saving';
+        status.innerHTML = '&#10060; Error saving';
         status.style.color = 'var(--danger)';
         btn.disabled = false;
     }
@@ -1088,13 +1127,32 @@ async function submitFeedback(skill_id, rating, btn) {
     } catch(e) { console.error(e); }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+// --- Robust Initialization ---
+function init() {
+  console.log("Initializing Dashboard...");
   load();
   loadConfig();
-});
-setInterval(load, 30000);
+  pollHealth();
+  pollSafety();
+  pollRegime();
+  pollLogs();
+  
+  // Setup intervals
+  setInterval(load, 30000);
+  setInterval(pollHealth, 10000);
+  setInterval(pollSafety, 5000);
+  setInterval(pollRegime, 60000);
+  setInterval(pollLogs, 3000);
+}
 
-// &#9472;&#9472; Service status polling &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  // Already interactive or complete
+  setTimeout(init, 300); // Small delay for Chart.js
+}
+
+// --- Service status polling ---
 async function pollHealth() {
   const services = ['main','server','postgres','redis','ollama','stop_monitor','scanner'];
   services.forEach(s => {
@@ -1106,21 +1164,22 @@ async function pollHealth() {
     services.forEach(s => {
       const el = document.getElementById('sphere-'+s);
       if (!el) return;
-      const st = h.services?.[s] || 'error';
+      const st = h.services ? h.services[s] : 'error';
       el.className = 'sphere ' + (st === 'ok' ? 'ok' : 'error');
       const label = document.getElementById('label-'+s);
       if (label) {
         const name = s === 'stop_monitor' ? 'Stop Monitor' : s === 'scanner' ? 'Scanner' : s.charAt(0).toUpperCase()+s.slice(1);
-        label.textContent = name + (st !== 'ok' ? ' &#9888;' : '');
+        label.textContent = name + (st !== 'ok' ? ' \u26A0' : '');
       }
     });
     document.getElementById('healthTs').textContent = 'Last checked ' + new Date().toLocaleTimeString();
   } catch(e) {
+    console.error("Health fetch failed:", e);
     services.forEach(s => {
       const el = document.getElementById('sphere-'+s);
       if (el) el.className = 'sphere error';
     });
-    document.getElementById('healthTs').textContent = '&#9888; Health check failed';
+    document.getElementById('healthTs').textContent = '\u26A0 Health offline';
   }
 }
 
@@ -1190,13 +1249,13 @@ async function pollSafety() {
             btn.textContent = 'CANCEL KILL SWITCH (RESUME)';
             btn.style.background = 'var(--accent2)';
             btn.style.borderColor = 'var(--accent2)';
-            st.textContent = '&#128721; TRADING HALTED';
+            st.innerHTML = '&#128721; TRADING HALTED';
             st.style.color = 'var(--danger)';
         } else {
             btn.textContent = 'EMERGENCY KILL SWITCH';
             btn.style.background = 'var(--danger)';
             btn.style.borderColor = '#ff0000';
-            st.textContent = '&#128994; SYSTEM ARMED';
+            st.innerHTML = '&#128994; SYSTEM ARMED';
             st.style.color = 'var(--accent2)';
         }
         currentConfig.kill_switch = data.kill_switch;
@@ -1207,16 +1266,16 @@ async function pollSafety() {
         if (modeSphere && modeLabel) {
             if (data.trade_mode === 'paper') {
                 modeSphere.className = 'sphere checking';
-                modeLabel.textContent = '&#128196; Paper Only';
+                modeLabel.innerHTML = '&#128196; Paper Only';
             } else if (data.bybit_demo) {
                 modeSphere.className = 'sphere ok';
-                modeLabel.textContent = '&#129514; Bybit DEMO';
+                modeLabel.innerHTML = '&#129514; Bybit DEMO';
             } else if (data.bybit_testnet) {
                 modeSphere.className = 'sphere error'; // Red for testnet? Or maybe create a class
-                modeLabel.textContent = '&#128736; Bybit Testnet';
+                modeLabel.innerHTML = '&#128736; Bybit Testnet';
             } else {
                 modeSphere.className = 'sphere ok';
-                modeLabel.textContent = '&#128176; LIVE Production';
+                modeLabel.innerHTML = '&#128176; LIVE Production';
             }
         }
     } catch(e) { console.error("Safety poll failed"); }
@@ -1347,11 +1406,11 @@ async function saveChatToMemory() {
   status.innerHTML = '<span style="color:var(--muted)">&#128190; Opslaan naar MD + ChromaDB...</span>';
 
   const ts = new Date().toLocaleString('nl-NL');
-  const lines = ['# Debat & Training Sessie &#8212; ' + ts + '\n'];
+  const lines = ['# Debat & Training Sessie &#8212; ' + ts + '\\n'];
   for (const m of chatMessages) {
-    lines.push('**' + (m.role === 'user' ? 'Werner' : 'Agent') + ':** ' + m.content + '\n');
+    lines.push('**' + (m.role === 'user' ? 'Werner' : 'Agent') + ':** ' + m.content + '\\n');
   }
-  const memoryText = lines.join('\n');
+  const memoryText = lines.join('\\n');
 
   try {
     const res = await fetch('/api/config/agent/save-memory', {
@@ -1372,20 +1431,21 @@ async function saveChatToMemory() {
 
 document.addEventListener('DOMContentLoaded', () => { onAgentChange(); });
 
-// &#9472;&#9472; Live Log Viewer &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
+// --- Live Log Viewer ---
 async function pollLogs() {
   if (logPaused) return;
   try {
     const data = await fetch('/logs?n=40').then(r => r.json());
     const viewer = document.getElementById('logViewer');
+    if (!viewer) return;
     const wasAtBottom = viewer.scrollHeight - viewer.scrollTop <= viewer.clientHeight + 40;
     
     viewer.innerHTML = data.lines.map(l => {
       let cls = 'log-other';
       if (l.includes('[SCANNER]')) cls = 'log-scanner';
       else if (l.includes('[MONITOR]')) cls = 'log-monitor';
-      else if (l.includes('[RISK] &#9989;')) cls = 'log-risk-ok';
-      else if (l.includes('[RISK] &#10060;')) cls = 'log-risk-err';
+      else if (l.includes('[RISK] \u2705')) cls = 'log-risk-ok';
+      else if (l.includes('[RISK] \u274C')) cls = 'log-risk-err';
       else if (l.includes('[ORC]'))     cls = 'log-orc';
       else if (l.includes('[LLM]'))     cls = 'log-llm';
       else if (l.includes('[SKILL]'))   cls = 'log-skill';
@@ -1396,7 +1456,7 @@ async function pollLogs() {
     if (wasAtBottom) viewer.scrollTop = viewer.scrollHeight;
     document.getElementById('logTs').textContent = 'Last update ' + new Date().toLocaleTimeString();
   } catch(e) {
-    document.getElementById('logTs').textContent = '&#9888; Logs offline';
+    document.getElementById('logTs').textContent = '\u26A0 Logs offline';
   }
 }
 
@@ -1415,15 +1475,13 @@ async function pollRegime() {
     } catch(e) {}
 }
 
-pollLogs();
-setInterval(pollLogs, 3000);
+// Global error handler for debugging
+window.onerror = function(msg, url, line) {
+  const el = document.getElementById('lastUpdate');
+  if (el) el.innerHTML = `<span style="color:var(--danger)">\u26A0 JS Error: ${msg} (Line ${line})</span>`;
+  console.error("DASHBOARD FATAL:", msg, "at", url, ":", line);
+};
 
-pollHealth();
-setInterval(pollHealth, 10000);
-pollSafety();
-setInterval(pollSafety, 5000);
-pollRegime();
-setInterval(pollRegime, 60000);
 </script>
 </body>
 </html>
