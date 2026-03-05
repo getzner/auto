@@ -42,9 +42,9 @@ async def get_pool() -> asyncpg.Pool:
             DSN,
             min_size=DB_POOL_MIN,
             max_size=DB_POOL_MAX,
-            command_timeout=30,
+            command_timeout=60,
             max_inactive_connection_lifetime=60.0,
-            timeout=15.0
+            timeout=30.0
         )
         logger.info("[DB] Connection pool ready")
     return _pool

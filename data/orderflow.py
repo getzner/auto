@@ -93,7 +93,7 @@ async def compute_and_save_orderflow(
             """
             SELECT ts, price, amount, taker_side FROM trades_raw
             WHERE symbol=$1 AND ts >= $2
-            ORDER BY ts ASC
+            ORDER BY ts ASC LIMIT 50000
             """,
             symbol, oldest_ts,
         )
