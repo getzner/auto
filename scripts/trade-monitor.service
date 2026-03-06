@@ -1,0 +1,19 @@
+[Unit]
+Description=Trade Server Monitor Service (Stop Loss & Take Profit)
+After=network.target trade-api.service
+Requires=trade-api.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trade_server
+Environment=PYTHONPATH=/opt/trade_server
+EnvironmentFile=/opt/trade_server/.env
+ExecStart=/opt/trade_env/bin/python services/monitor_service.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/trade_monitor.log
+StandardError=append:/var/log/trade_monitor.log
+
+[Install]
+WantedBy=multi-user.target

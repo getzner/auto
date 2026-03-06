@@ -60,31 +60,52 @@ class MetaAgent:
         else:
             self.llm = self.model
 
-    async def get_agent_performance(self) -> dict:
-        """Load hit rates and decision history for all agents from DB."""
+    async def get_agent_performance(self, symbol: str = "BTC/USDT") -> dict:
+        """Load hit rates and decision history for all agents from DB, including non-trades."""
         from data.db import get_db_conn
         conn = await get_db_conn()
         try:
-            # Get agent-level signals from decisions (from reasoning JSON)
-            rows = await conn.fetch("""
+            # 1. Bestaande trade performance (ongewijzigd)
+            trade_rows = await conn.fetch("""
                 SELECT d.symbol, d.direction as final_direction,
                        p.pnl_usdt, p.status,
                        d.reasoning, d.ts
                 FROM decisions d
                 LEFT JOIN positions p ON p.decision_id = d.id
                 WHERE d.approved = true
+                  AND d.symbol = $1
                 ORDER BY d.ts DESC
                 LIMIT 100
-            """)
+            """, symbol)
+            
+            # 2. NIEUW: Non-trade performance
+            non_trade_rows = await conn.fetch("""
+                SELECT 
+                    nt.symbol,
+                    nt.direction,
+                    nt.reject_reason,
+                    nt.outcome,
+                    nt.price_at_reject,
+                    nt.price_4h_later,
+                    nt.human_verdict,
+                    nt.human_note,
+                    nt.analyst_signals,
+                    d.reasoning
+                FROM non_trade_outcomes nt
+                JOIN decisions d ON d.id = nt.decision_id
+                WHERE nt.symbol = $1
+                  AND nt.outcome != 'pending'
+                ORDER BY nt.ts DESC LIMIT 30
+            """, symbol)
         finally:
             await conn.close()
 
-        if not rows:
-            return {"note": "No completed trades yet — run more cycles first"}
+        if not trade_rows and not non_trade_rows:
+            return {"note": "No completed trades or evaluated non-trades yet — run more cycles first"}
 
-        # Parse analyst signals vs final outcome
+        # Parse analyst signals vs final outcome for TRADES
         agent_stats = {}
-        for row in rows:
+        for row in trade_rows:
             try:
                 reasoning = json.loads(row["reasoning"]) if isinstance(row["reasoning"], str) else row["reasoning"]
                 analyst_reports = reasoning.get("analyst_reports", [])
@@ -110,7 +131,7 @@ class MetaAgent:
             except Exception:
                 continue
 
-        # Compute accuracy
+        # Compute accuracy for TRADES
         performance = {}
         for name, stats in agent_stats.items():
             if stats["total"] > 0:
@@ -126,7 +147,24 @@ class MetaAgent:
                         "POOR"
                     )
                 }
-        return performance
+                
+        # Calculate non-trade accuracy
+        correct_rejects   = [r for r in non_trade_rows if r["outcome"] == "correct_reject"]
+        missed_opps       = [r for r in non_trade_rows if r["outcome"] == "missed_opportunity"]
+        
+        non_trade_accuracy = (
+            len(correct_rejects) / len(non_trade_rows) * 100
+            if non_trade_rows else 0
+        )
+        
+        return {
+            "agents": performance,
+            "trades": [dict(r) for r in trade_rows],
+            "non_trades": [dict(r) for r in non_trade_rows],
+            "non_trade_accuracy": round(non_trade_accuracy, 1),
+            "correct_rejects": len(correct_rejects),
+            "missed_opportunities": len(missed_opps),
+        }
 
     async def review_and_improve(self, symbol: str = "BTC/USDT") -> dict:
         """
@@ -138,18 +176,44 @@ class MetaAgent:
 
         logger.info("[META] Starting weekly review cycle")
 
-        performance = await self.get_agent_performance()
+        performance = await self.get_agent_performance(symbol)
         if "note" in performance:
             logger.info(f"[META] {performance['note']}")
             return performance
 
+        def format_missed_opportunities(non_trades):
+            missed = [nt for nt in non_trades if nt["outcome"] == "missed_opportunity"]
+            if not missed:
+                return "None recently."
+            lines = []
+            for m in missed[:5]:
+                rs = json.dumps(m.get("analyst_signals", {}))
+                lines.append(f"- {m['ts']} | config: {m['direction']} @ {m['price_at_reject']} -> 4h {m['price_4h_later']} | Signals: {rs}")
+            return "\n".join(lines)
+
+        non_trade_section = f"""
+=== NON-TRADE ANALYSIS ===
+Rejected setups evaluated: {len(performance.get('non_trades', []))}
+Correct rejects (price went wrong way): {performance.get('correct_rejects', 0)} ✅
+Missed opportunities (price went right way): {performance.get('missed_opportunities', 0)} ❌
+Non-trade accuracy: {performance.get('non_trade_accuracy', 0)}%
+
+Recent missed opportunities to learn from:
+{format_missed_opportunities(performance.get('non_trades', []))}
+
+KEY QUESTION: Are we being TOO conservative (missing good trades)?
+Or are our rejects protecting capital correctly?
+Adjust agent confidence thresholds accordingly.
+"""
+
         # Ask LLM to evaluate and design improvement
-        perf_str = json.dumps(performance, indent=2)
+        perf_str = json.dumps(performance.get("agents", performance), indent=2)
         messages = [
             SystemMessage(content=META_SYSTEM_PROMPT),
             HumanMessage(content=(
                 f"Symbol: {symbol}\n"
-                f"Agent performance data:\n{perf_str}\n\n"
+                f"Agent trade performance data:\n{perf_str}\n\n"
+                f"{non_trade_section}\n\n"
                 f"Date: {datetime.now(timezone.utc).date()}\n\n"
                 "Evaluate all agents, identify the weakest performer, "
                 "and design an improved set of entry conditions to backtest."

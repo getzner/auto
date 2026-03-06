@@ -9,7 +9,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Trade Server &#8212; Dashboard</title>
+<title>Trade Server &#8212; Dashboard</title> <!-- SYNC_CHECK_ANTIGRAVITY_v1 -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -238,15 +238,35 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     align-items: center;
     margin-bottom: 10px;
   }
-  .log-line { padding: 2px 0; white-space: pre-wrap; word-break: break-all; border-bottom: 1px solid rgba(255,255,255,0.02); }
+  .log-line { 
+    display: flex;
+    gap: 8px;
+    padding: 3px 0; 
+    white-space: pre-wrap; 
+    word-break: break-all; 
+    border-bottom: 1px solid rgba(255,255,255,0.02); 
+    align-items: flex-start;
+  }
+  .log-ts { color: var(--muted); font-size: .65rem; min-width: 125px; flex-shrink: 0; }
+  .log-icon { width: 18px; text-align: center; flex-shrink: 0; }
+  .log-content { flex-grow: 1; }
+  .log-tag { font-weight: 600; text-transform: uppercase; font-size: .65rem; margin-right: 4px; }
   
+  .log-level-info { color: #94a3b8; }
+  .log-level-warn { color: var(--warn); }
+  .log-level-err  { color: var(--danger); }
+  .log-level-crit { color: #fff; background: var(--danger); padding: 0 4px; border-radius: 2px; animation: log-pulse 1.5s infinite; }
+  
+  @keyframes log-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
   .log-scanner  { color: #a78bfa; }
   .log-monitor  { color: #34d399; }
-  .log-risk-ok  { color: #10b981; font-weight: 600; }
-  .log-risk-err { color: #f87171; font-weight: 600; }
+  .log-risk-ok  { color: #10b981; }
+  .log-risk-err { color: #f87171; }
   .log-orc      { color: #6366f1; }
-  .log-llm      { color: #f59e0b; font-style: italic; }
+  .log-llm      { color: #f59e0b; }
   .log-skill    { color: #ec4899; }
+  .log-agent    { color: #fbbf24; font-weight: 700; border-bottom: 1px dashed rgba(251,191,36,0.5); }
   .log-other    { color: #94a3b8; }
 
   .log-blink {
@@ -672,6 +692,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div style="color:var(--muted); font-size:.8rem; padding: 20px;">Analyzing past performance...</div>
 </div>
 
+<!-- Non-Trade Journal Section -->
+<div style="margin-top: 32px; margin-bottom: 24px;">
+  <div style="display:flex; align-items:center; gap:10px">
+    <span style="font-size:.85rem; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.06em">&#128737;&#65039; Non-Trade Journal (Rejected Proposals)</span>
+  </div>
+</div>
+<div class="journal-grid" id="nonTradeGrid">
+  <div style="color:var(--muted); font-size:.8rem; padding: 20px;">Evaluating rejected setups...</div>
+</div>
+
 <script>
 const fmt    = (n) => '$' + (parseFloat(n)||0).toFixed(4);
 const fmtBig = (n) => '$' + (parseFloat(n)||0).toFixed(2);
@@ -938,6 +968,55 @@ async function load() {
         if (!journalEntries.length) jGrid.innerHTML = '<div style="color:var(--muted); font-size:.8rem; padding: 20px; grid-column: 1/-1; text-align:center">No journal entries yet.</div>';
     });
 
+    // --- Non-Trade Journal ---
+    safeFetch('/non-trades?limit=10', []).then(nonTrades => {
+        const grid = document.getElementById('nonTradeGrid');
+        if (!grid) return;
+        grid.innerHTML = '';
+        (nonTrades || []).forEach(nt => {
+            const outcomeColor = {
+                'correct_reject':    'var(--accent2)',   // groen
+                'missed_opportunity':'var(--danger)',     // rood
+                'neutral':           'var(--muted)',      // grijs
+                'pending':           'var(--warn)',       // oranje
+            }[nt.outcome] || 'var(--muted)';
+            
+            const outcomeIcon = {
+                'correct_reject':     '🛡️ Correct Reject',
+                'missed_opportunity': '💸 Missed Trade',
+                'neutral':            '➖ Neutral',
+                'pending':            '⏳ Evaluating...',
+            }[nt.outcome] || '—';
+            
+            const pReject = nt.price_at_reject ? nt.price_at_reject.toFixed(4) : '—';
+            const p4h = nt.price_4h_later ? nt.price_4h_later.toFixed(4) : '—';
+            const pct = nt.pct_change ? (nt.pct_change > 0 ? '+' : '') + nt.pct_change.toFixed(2) : '—';
+            
+            grid.innerHTML += `
+                <div class="journal-card">
+                    <div class="journal-header">
+                        <strong>${esc(nt.symbol)}</strong>
+                        <span style="color:${outcomeColor}">${outcomeIcon}</span>
+                    </div>
+                    <div style="font-size:.8rem; color:var(--muted)">
+                        Rejected: ${esc(nt.direction)} @ $${pReject}
+                    </div>
+                    <div style="font-size:.75rem; color:var(--muted); margin-bottom: 8px;">
+                        <em>${esc(nt.reject_reason || '')}</em>
+                    </div>
+                    <div style="font-size:.8rem; margin-top:8px">
+                        4h later: $${p4h} (${pct}%)
+                    </div>
+                    <div style="margin-top:10px; display:flex; gap:6px">
+                        <button class="btn-save" style="background:var(--accent2);color:black;font-size:0.7rem;padding:4px 8px" onclick="rateNonTrade(${nt.decision_id}, 1, this)">✅ Goed afgewezen</button>
+                        <button class="btn-save" style="background:var(--danger);color:white;font-size:0.7rem;padding:4px 8px" onclick="rateNonTrade(${nt.decision_id}, -1, this)">❌ Had moeten traden</button>
+                    </div>
+                </div>
+            `;
+        });
+        if (!nonTrades.length) grid.innerHTML = '<div style="color:var(--muted); font-size:.8rem; padding: 20px; grid-column: 1/-1; text-align:center">No pending or evaluated non-trades.</div>';
+    });
+
   } catch(err) { 
     console.error("DASHBOARD FATAL ERROR:", err); 
     const upd = document.getElementById('lastUpdate');
@@ -1126,6 +1205,30 @@ async function saveAllConfig() {
         btn.disabled = false;
     }
 }
+async function rateNonTrade(decision_id, rating, btn) {
+    if (!decision_id) return;
+    const text = rating > 0 ? "Correct reject. Good job avoiding this." : "Missed opportunity. Should have traded this.";
+    btn.innerHTML = '...';
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/feedback', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({decision_id: decision_id, feedback_text: text})
+        });
+        if (res.ok) {
+            btn.innerHTML = '&#9989; Saved';
+            btn.style.background = 'var(--accent2)';
+            btn.style.color = 'black';
+        } else {
+            throw new Error("Failed");
+        }
+    } catch(e) {
+        btn.innerHTML = '&#10060; Error';
+        btn.style.background = 'var(--danger)';
+    }
+}
+
 async function submitFeedback(skill_id, rating, btn) {
     try {
         const parent = btn.parentElement;
@@ -1461,16 +1564,58 @@ async function pollLogs() {
     const wasAtBottom = viewer.scrollHeight - viewer.scrollTop <= viewer.clientHeight + 40;
     
     viewer.innerHTML = data.lines.map(l => {
-      let cls = 'log-other';
-      if (l.includes('[SCANNER]')) cls = 'log-scanner';
-      else if (l.includes('[MONITOR]')) cls = 'log-monitor';
-      else if (l.includes('[RISK] \u2705')) cls = 'log-risk-ok';
-      else if (l.includes('[RISK] \u274C')) cls = 'log-risk-err';
-      else if (l.includes('[ORC]'))     cls = 'log-orc';
-      else if (l.includes('[LLM]'))     cls = 'log-llm';
-      else if (l.includes('[SKILL]'))   cls = 'log-skill';
+      // 1. Strip journalctl prefix (everything before python[...]: )
+      const colonIdx = l.indexOf('python[');
+      let clean = l;
+      if (colonIdx !== -1) {
+        const afterPython = l.indexOf(': ', colonIdx);
+        if (afterPython !== -1) clean = l.substring(afterPython + 2);
+      }
+
+      // 2. Parse Timestamp | Level | Message
+      const parts = clean.split(' | ');
+      let ts = '', level = 'INFO', msg = clean;
+      if (parts.length >= 3) {
+        ts = parts[0];
+        level = parts[1].trim();
+        msg = parts.slice(2).join(' | ');
+      }
+
+      // 3. Extract Tag and Icon
+      let tag = '', icon = '🔹', cls = 'log-other';
+      const tagMatch = msg.match(/^\[(SCANNER|MONITOR|RISK|ORC|LLM|SKILL)\]/);
+      if (tagMatch) {
+        tag = tagMatch[1];
+        if (tag === 'SCANNER') { icon = '🔍'; cls = 'log-scanner'; }
+        else if (tag === 'MONITOR') { icon = '📈'; cls = 'log-monitor'; }
+        else if (tag === 'RISK') { 
+          if (msg.includes('\u2705')) { icon = '🛡️'; cls = 'log-risk-ok'; }
+          else { icon = '⚠️'; cls = 'log-risk-err'; }
+        }
+        else if (tag === 'ORC') { icon = '🧠'; cls = 'log-orc'; }
+        else if (tag === 'LLM') { icon = '🤖'; cls = 'log-llm'; }
+        else if (tag === 'SKILL') { icon = '🛠️'; cls = 'log-skill'; }
+      }
       
-      return `<div class="log-line ${cls}">${esc(l)}</div>`;
+      // 4. Level class
+      let lvlCls = 'log-level-info';
+      if (level === 'WARNING' || level === 'WARN') lvlCls = 'log-level-warn';
+      else if (level === 'ERROR') { lvlCls = 'log-level-err'; icon = '🚨'; }
+      else if (level === 'CRITICAL') { lvlCls = 'log-level-crit'; icon = '🔥'; }
+
+      // 5. Highlight Agent Names
+      let processedMsg = esc(msg);
+      ['GAMETHEORY', 'VOLUME', 'TREND', 'ORCHESTRATOR'].forEach(a => {
+        processedMsg = processedMsg.replace(new RegExp(a, 'g'), `<span class="log-agent">${a}</span>`);
+      });
+
+      return `
+        <div class="log-line ${cls} ${lvlCls}">
+          <div class="log-ts">${ts}</div>
+          <div class="log-icon">${icon}</div>
+          <div class="log-content">${processedMsg}</div>
+        </div>
+      `;
     }).join('');
     
     if (wasAtBottom) viewer.scrollTop = viewer.scrollHeight;

@@ -1,7 +1,10 @@
 import os
 import json
-from fastapi import APIRouter, HTTPException
+import typing
+from datetime import datetime
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from api.auth import verify
 from loguru import logger
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -156,9 +159,8 @@ async def update_safety(data: dict):
 @router.get("/system")
 async def get_system_config():
     """Fetch all dynamic settings from system_config table."""
-    from data.db import get_db_conn
-    conn = await get_db_conn()
-    try:
+    from data.db import get_db_session
+    async with get_db_session() as conn:
         rows = await conn.fetch("SELECT key, value FROM system_config")
         config = {r["key"]: json.loads(r["value"]) for r in rows}
         
@@ -172,39 +174,31 @@ async def get_system_config():
             config["scanner_thresholds"] = {"volatility_zscore": 2.0, "volume_spike_multi": 3.0, "trigger_threshold": 2}
             
         return config
-    finally:
-        await conn.close()
 
 @router.post("/system")
 async def update_system_config(data: dict):
     """Update specific keys in system_config."""
-    from data.db import get_db_conn
-    conn = await get_db_conn()
-    try:
+    from data.db import get_db_session
+    async with get_db_session() as conn:
         for key, value in data.items():
             await conn.execute("""
                 INSERT INTO system_config (key, value) VALUES ($1, $2)
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """, key, json.dumps(value))
         return {"status": "success"}
-    finally:
-        await conn.close()
 
 # ── Challenger Analytics ──────────────────────────────
 @router.get("/challengers")
 async def get_challenger_results(limit: int = 20):
     """Fetch recent challenger agent performance."""
-    from data.db import get_db_conn
-    conn = await get_db_conn()
-    try:
+    from data.db import get_db_session
+    async with get_db_session() as conn:
         rows = await conn.fetch("""
             SELECT ts, symbol, challenger_name, signal, confidence, reasoning
             FROM challenger_results
             ORDER BY ts DESC LIMIT $1
         """, limit)
         return [dict(r) for r in rows]
-    finally:
-        await conn.close()
 
 # ── System Control ──────────────────────────────────────
 @router.post("/system/kill-ghosts")
@@ -213,8 +207,8 @@ async def kill_ghosts():
     import subprocess
     logger.warning("[API] 👻 KILLING GHOST PROCESSES ON PORT 8000")
     try:
-        # Spawn a background shell process to kill port 8000 and restart safely
-        script = "sleep 1; fuser -k -9 8000/tcp || true; sleep 1; systemctl restart trade-server trade-main"
+        # Improved kill script: sleep, force kill port 8000, then restart correct services
+        script = "sleep 1; fuser -k -9 8000/tcp || true; sleep 2; systemctl restart trade-api trade-main"
         subprocess.Popen(script, shell=True)
         return {"status": "killing_ghosts", "message": "Ghost processes will be terminated and system will restart"}
     except Exception as e:
@@ -227,10 +221,9 @@ async def restart_system():
     import subprocess
     logger.warning("[API] 🔄 FULL SYSTEM RESTART TRIGGERED FROM DASHBOARD")
     try:
-        # We use a background task to avoid killing the response immediately
-        # However, for systemd, restart will kill this process
-        subprocess.Popen(["systemctl", "restart", "trade-server", "trade-main"])
-        return {"status": "restarting", "message": "System restart signal sent"}
+        # Correct service names for restart
+        subprocess.Popen(["systemctl", "restart", "trade-api", "trade-main"])
+        return {"status": "success", "message": "System restart initiated"}
     except Exception as e:
         logger.error(f"[API] Restart failed: {e}")
         # Fallback for non-systemd environments or local testing
@@ -293,7 +286,7 @@ AGENT_PERSONAS = {
 }
 
 @router.post("/agent/chat")
-async def chat_with_agent(data: dict):
+async def chat_with_agent(data: dict, user: str = Depends(verify)):
     """
     Gap 3+4: Real-time debate/sparring chat with an agent.
     Uses the agent's REAL configured LLM and persona, not always Ollama.
@@ -336,11 +329,10 @@ async def chat_with_agent(data: dict):
             elif msg["role"] == "assistant":
                 langchain_msgs.append(AIMessage(content=msg["content"]))
 
-        # Use Ollama (always available locally)
-        from langchain_ollama import ChatOllama
-        llm = ChatOllama(
-            model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),
-            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        # Dynamic LLM from factory (respects dashboard switcher!)
+        from agents.llm_factory import get_llm
+        llm = get_llm(
+            agent_name=agent_name,
             temperature=0.4  # higher temp for debate/creativity
         )
 
@@ -356,23 +348,38 @@ class AgentMemoryUpdate(BaseModel):
     memory_text: str
 
 @router.post("/agent/save-memory")
-async def update_agent_md_memory(data: AgentMemoryUpdate):
+async def update_agent_md_memory(data: AgentMemoryUpdate, user: str = Depends(verify)):
     """Gap 2: Save chat memory to BOTH MD file AND ChromaDB.
     MD file = explicit, always-on instructions.
     ChromaDB = semantic, recalled by similarity during analysis.
     """
     try:
-        mem_dir = "/opt/trade_server/data/memories"
-        if not os.path.exists("/opt/trade_server"):
-            mem_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "memories"))
+        # Robust absolute path for memories
+        api_dir = os.path.dirname(os.path.abspath(__file__))
+        mem_dir = os.path.abspath(os.path.join(api_dir, "..", "data", "memories"))
 
         os.makedirs(mem_dir, exist_ok=True)
         file_path = os.path.join(mem_dir, f"{data.agent_name}.md")
 
-        with open(file_path, "w") as f:
-            f.write(data.memory_text)
+        # Append with separator and timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"\n\n---\n### Memory Save: {timestamp}\n{data.memory_text}"
+        
+        with open(file_path, "a") as f:
+            f.write(entry)
 
-        logger.info(f"[API] MD memory updated for {data.agent_name}")
+        # Trim to last 8000 characters if too large
+        with open(file_path, "r") as f:
+            content = f.read()
+            
+        if len(content) > 8000:
+            logger.warning(f"[API] Trimming memory for {data.agent_name} (size: {len(content)})")
+            # Keep the last 8000 chars, but try to start at a separator if possible
+            trimmed = content[-8000:]
+            with open(file_path, "w") as f:
+                f.write(trimmed)
+
+        logger.info(f"[API] MD memory appended/trimmed for {data.agent_name}")
 
         # Gap 2: Also store in ChromaDB as human feedback (semantic layer)
         chroma_ok = False
@@ -405,20 +412,14 @@ class FeedbackRequest(BaseModel):
 @router.post("/feedback")
 async def submit_feedback(fb: FeedbackRequest):
     """Save user feedback for a specific skill analysis."""
-    from data.db import get_db_conn
-    conn = await get_db_conn()
-    try:
+    from data.db import get_db_session
+    async with get_db_session() as conn:
         await conn.execute("""
             INSERT INTO skill_outcomes (skill_id, user_rating, decision_id)
             VALUES ($1, $2, $3)
         """, fb.skill_id, fb.rating, fb.decision_id)
         logger.info(f"[API] Feedback received for {fb.skill_id}: {fb.rating}")
         return {"status": "success"}
-    except Exception as e:
-        logger.error(f"[API] Error saving feedback: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        await conn.close()
 
 def get_config_router():
     return router

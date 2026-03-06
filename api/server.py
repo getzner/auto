@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import secrets
+from api.auth import verify
 from pydantic import BaseModel
 import uvicorn
 from loguru import logger
@@ -166,20 +167,7 @@ app.add_middleware(
 
 SYMBOLS = [s.strip() for s in get_env_string("SYMBOLS", "BTC/USDT,ETH/USDT").split(",")]
 
-security = HTTPBasic()
-
-def verify(credentials: HTTPBasicCredentials = Depends(security)):
-    req_user = os.getenv("DASHBOARD_USER", "admin")
-    req_pass = os.getenv("DASHBOARD_PASS", "admin123")
-    ok_user = secrets.compare_digest(credentials.username, req_user)
-    ok_pass = secrets.compare_digest(credentials.password, req_pass)
-    if not (ok_user and ok_pass):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
+# verify dependency now imported from api.auth
 
 app.include_router(get_dashboard_router(), dependencies=[Depends(verify)])
 app.include_router(get_config_router(), dependencies=[Depends(verify)])
@@ -308,6 +296,44 @@ async def recent_trades(user: str = Depends(verify)):
         return {"trades": [], "total": 0, "wins": 0, "win_rate": 0,
                 "total_pnl": 0, "total_fees": 0, "error": str(e)}
 
+@app.get("/non-trades")
+async def non_trades(limit: int = 10, user: str = Depends(verify)):
+    """Fetch recent non-trades (rejected decisions) and their outcomes."""
+    from data.db import get_db_session
+    try:
+        async with get_db_session() as conn:
+            rows = await conn.fetch("""
+                SELECT id, decision_id, ts, symbol, direction, reject_reason,
+                       price_at_reject, price_1h_later, price_4h_later, price_24h_later,
+                       outcome, human_verdict, human_note
+                FROM non_trade_outcomes
+                ORDER BY ts DESC
+                LIMIT $1
+            """, limit)
+            
+            nt_list = []
+            for r in rows:
+                p_reject = float(r["price_at_reject"] or 0)
+                p_4h = float(r["price_4h_later"] or 0)
+                pct_change = ((p_4h - p_reject)/p_reject*100) if p_reject > 0 and p_4h > 0 else 0
+                
+                nt_list.append({
+                    "id": r["id"],
+                    "decision_id": r["decision_id"],
+                    "ts": r["ts"].isoformat() if r["ts"] else None,
+                    "symbol": r["symbol"],
+                    "direction": r["direction"],
+                    "reject_reason": r["reject_reason"],
+                    "price_at_reject": round(p_reject, 4) if p_reject else None,
+                    "price_4h_later": round(p_4h, 4) if p_4h else None,
+                    "pct_change": round(pct_change, 2),
+                    "outcome": r["outcome"],
+                    "human_verdict": r["human_verdict"]
+                })
+            return nt_list
+    except Exception as e:
+        logger.error(f"Error fetching non-trades: {e}")
+        return []
 
 # ── Live Log Viewer ───────────────────────────────────────
 

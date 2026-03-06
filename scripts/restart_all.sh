@@ -12,6 +12,7 @@ echo "Stoppen van actieve services via systemd..."
 sudo systemctl stop trade-main || echo "trade-main was already stopped or not found."
 sudo systemctl stop trade-api || echo "trade-api was already stopped or not found."
 sudo systemctl stop trade-monitor || echo "trade-monitor was already stopped or not found."
+sudo systemctl stop trade-evaluator || echo "trade-evaluator was already stopped or not found."
 
 echo "Docker containers herstarten..."
 # We stoppen eerst alle containers zachtjes, en verwijderen ze dan
@@ -30,7 +31,8 @@ sleep 10
 echo "Opstarten van systemd services..."
 sudo systemctl start trade-api
 sudo systemctl start trade-main
-# sudo systemctl start trade-monitor # Uncomment if trade-monitor is consistently used
+sudo systemctl start trade-evaluator
+sudo systemctl start trade-monitor
 
 echo "Alle services zijn gestart."
 echo "Check de status met:"

@@ -30,6 +30,7 @@ LLM_PRICING: dict[str, dict] = {
     # xAI (Grok)
     "grok-2":              {"input": 2.00,  "output": 10.00},
     "grok-2-mini":         {"input": 0.20,  "output": 0.40},
+    "grok-4.1-fast":       {"input": 0.20,  "output": 0.40},
     # Ollama (local — free)
     "llama3.2":            {"input": 0.0,   "output": 0.0},
     "llama3.2:3b":         {"input": 0.0,   "output": 0.0},

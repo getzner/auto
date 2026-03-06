@@ -1,0 +1,19 @@
+[Unit]
+Description=Trade Server Non-Trade Evaluator
+After=network.target trade-api.service
+Requires=trade-api.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trade_server
+Environment=PYTHONPATH=/opt/trade_server
+EnvironmentFile=/opt/trade_server/.env
+ExecStart=/opt/trade_env/bin/python services/non_trade_evaluator.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/trade_evaluator.log
+StandardError=append:/var/log/trade_evaluator.log
+
+[Install]
+WantedBy=multi-user.target

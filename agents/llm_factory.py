@@ -16,12 +16,16 @@ def get_llm(agent_name: str = None, provider: str = None, model: str = None, tem
     if agent_name and os.path.exists(override_file):
         try:
             with open(override_file, "r") as f:
-                overrides = json.load(f)
+                data = json.load(f)
+                # Support nested "overrides" key (new format) or flat (legacy)
+                overrides = data.get("overrides", data) if isinstance(data, dict) else {}
+                
                 if agent_name in overrides:
                     config = overrides[agent_name]
-                    provider = config.get("provider", provider)
-                    model = config.get("model", model)
-                    logger.info(f"[LLM] Dynamic override for {agent_name}: {provider}/{model}")
+                    if isinstance(config, dict):
+                        provider = config.get("provider", provider)
+                        model = config.get("model", model)
+                        logger.info(f"[LLM] Dynamic override for {agent_name}: {provider}/{model}")
         except Exception as e:
             logger.error(f"[LLM] Error reading overrides: {e}")
 

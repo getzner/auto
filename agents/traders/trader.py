@@ -278,6 +278,26 @@ class PortfolioManager:
                 approved,
             )
             decision_id = row["id"]
+            
+            # Save to non_trade tracking if rejected
+            if not approved:
+                reject_reason = pm_decision.get("reason", risk_assessment.get("rejection_reason", "Rejected"))
+                price_at_reject = trade_proposal.get("entry_price") or trade_proposal.get("current_price") or 0.0
+                await conn.execute(
+                    """
+                    INSERT INTO non_trade_outcomes
+                        (decision_id, ts, symbol, direction, reject_reason, price_at_reject, analyst_signals)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    decision_id,
+                    datetime.now(timezone.utc),
+                    symbol,
+                    direction,
+                    reject_reason,
+                    price_at_reject,
+                    json.dumps(analyst_reports)
+                )
+                
             logger.info(f"[Portfolio] Decision saved: id={decision_id} {symbol} {direction} approved={approved}")
             return decision_id
         except Exception as e:
