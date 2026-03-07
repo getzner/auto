@@ -501,6 +501,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="config-item"><span>Trigger Threshold</span><input type="number" id="scan-trig" oninput="enableSysSave()"></div>
       <div class="config-item"><span>Volatility Z-Score</span><input type="number" step="0.1" id="scan-z" oninput="enableSysSave()"></div>
     </div>
+    <div class="config-group">
+      <div class="stat-label" style="margin-bottom:8px">Scanner Limits</div>
+      <div class="config-item"><span>Cooldown (Min)</span><input type="number" id="scan-cooldown" oninput="enableSysSave()"></div>
+      <div class="config-item"><span>Max Cycles/Day</span><input type="number" id="scan-max-day" oninput="enableSysSave()"></div>
+    </div>
   </div>
   <div style="margin-top:16px; text-align:right">
     <button class="btn-save" id="saveSysConfigBtn" onclick="saveSystemConfig()" disabled>Apply Parameters</button>
@@ -929,6 +934,8 @@ async function load() {
             if (document.activeElement.id !== 'scan-vol')  document.getElementById('scan-vol').value  = st.volume_spike_multi || 3.0;
             if (document.activeElement.id !== 'scan-trig') document.getElementById('scan-trig').value = st.trigger_threshold || 2;
             if (document.activeElement.id !== 'scan-z')    document.getElementById('scan-z').value    = st.volatility_zscore || 2.0;
+            if (document.activeElement.id !== 'scan-cooldown') document.getElementById('scan-cooldown').value = st.cooldown_min || 30;
+            if (document.activeElement.id !== 'scan-max-day') document.getElementById('scan-max-day').value = st.max_cycles_day || 4;
         }
     });
 
@@ -1126,7 +1133,9 @@ async function saveSystemConfig() {
         "scanner_thresholds": {
             "volume_spike_multi": parseFloat(document.getElementById('scan-vol').value),
             "trigger_threshold":  parseInt(document.getElementById('scan-trig').value),
-            "volatility_zscore": parseFloat(document.getElementById('scan-z').value)
+            "volatility_zscore": parseFloat(document.getElementById('scan-z').value),
+            "cooldown_min": parseInt(document.getElementById('scan-cooldown').value) || 30,
+            "max_cycles_day": parseInt(document.getElementById('scan-max-day').value) || 4
         }
     };
     

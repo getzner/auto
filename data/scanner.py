@@ -254,7 +254,7 @@ async def scanner_loop(symbols: list[str]) -> None:
     """
     from agents.orchestrator import run_cycle
 
-    global _scanner_active, VOLUME_SPIKE_PCT, TRIGGER_THRESHOLD
+    global _scanner_active, VOLUME_SPIKE_PCT, TRIGGER_THRESHOLD, COOLDOWN_MINUTES, MAX_CYCLES_PER_DAY
     _scanner_active = True
     logger.info(
         f"[SCANNER] 🔍 Started "
@@ -276,6 +276,10 @@ async def scanner_loop(symbols: list[str]) -> None:
                     VOLUME_SPIKE_PCT = float(t["volume_spike_multi"])
                 if "trigger_threshold" in t:
                     TRIGGER_THRESHOLD = int(t["trigger_threshold"])
+                if "cooldown_min" in t:
+                    COOLDOWN_MINUTES = int(t["cooldown_min"])
+                if "max_cycles_day" in t:
+                    MAX_CYCLES_PER_DAY = int(t["max_cycles_day"])
         except Exception as e:
             logger.error(f"[SCANNER] Threshold update error: {e}")
         finally:
