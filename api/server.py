@@ -305,7 +305,7 @@ async def non_trades(limit: int = 10, user: str = Depends(verify)):
             rows = await conn.fetch("""
                 SELECT id, decision_id, ts, symbol, direction, reject_reason,
                        price_at_reject, price_1h_later, price_4h_later, price_24h_later,
-                       outcome, human_verdict, human_note
+                       outcome, human_verdict, human_note, max_price_4h, min_price_4h
                 FROM non_trade_outcomes
                 ORDER BY ts DESC
                 LIMIT $1
@@ -315,6 +315,8 @@ async def non_trades(limit: int = 10, user: str = Depends(verify)):
             for r in rows:
                 p_reject = float(r["price_at_reject"] or 0)
                 p_4h = float(r["price_4h_later"] or 0)
+                max_4h = float(r["max_price_4h"] or 0)
+                min_4h = float(r["min_price_4h"] or 0)
                 pct_change = ((p_4h - p_reject)/p_reject*100) if p_reject > 0 and p_4h > 0 else 0
                 
                 nt_list.append({
@@ -326,6 +328,8 @@ async def non_trades(limit: int = 10, user: str = Depends(verify)):
                     "reject_reason": r["reject_reason"],
                     "price_at_reject": round(p_reject, 4) if p_reject else None,
                     "price_4h_later": round(p_4h, 4) if p_4h else None,
+                    "max_price_4h": round(max_4h, 4) if max_4h else None,
+                    "min_price_4h": round(min_4h, 4) if min_4h else None,
                     "pct_change": round(pct_change, 2),
                     "outcome": r["outcome"],
                     "human_verdict": r["human_verdict"]

@@ -7,22 +7,27 @@ from datetime import datetime, timezone
 from loguru import logger
 
 from data.db import get_db_session
-from data.market_data import get_current_price
+from data.market_data import make_exchange
 
 async def evaluate_pending_non_trades():
     """
     For every non_trade with outcome='pending',
     fetch current price and determine if the reject was correct.
     """
+    exchange = None
     try:
         async with get_db_session() as conn:
             pending = await conn.fetch("""
-                SELECT id, symbol, direction, price_at_reject, ts, price_1h_later, price_4h_later, price_24h_later
+                SELECT id, symbol, direction, price_at_reject, ts, price_1h_later, price_4h_later, price_24h_later, max_price_4h, min_price_4h
                 FROM non_trade_outcomes
                 WHERE outcome = 'pending'
-                  AND ts < NOW() - INTERVAL '1 hour'
             """)
             
+            if not pending:
+                return
+
+            exchange = make_exchange()
+
             for row in pending:
                 symbol       = row["symbol"]
                 direction    = row["direction"]
@@ -30,7 +35,12 @@ async def evaluate_pending_non_trades():
                 
                 age_hours    = (datetime.now(timezone.utc) - row["ts"]).total_seconds() / 3600
                 
-                current_price = await get_current_price(symbol)
+                try:
+                    ticker = await exchange.fetch_ticker(symbol)
+                    current_price = float(ticker['last'])
+                except Exception as e:
+                    logger.error(f"Error fetching ticker for {symbol}: {e}")
+                    continue
                 
                 if not current_price or reject_price <= 0:
                     continue
@@ -41,6 +51,18 @@ async def evaluate_pending_non_trades():
                     update_fields["price_1h_later"] = current_price
                 if age_hours >= 4  and not row["price_4h_later"]:
                     update_fields["price_4h_later"] = current_price
+                    
+                if age_hours >= 4 and not row["max_price_4h"]:
+                    try:
+                        since_ms = int(row["ts"].timestamp() * 1000)
+                        # Fetch 4 hours of 15m candles (16 candles)
+                        ohlcv = await exchange.fetch_ohlcv(symbol, '15m', since=since_ms, limit=16)
+                        if ohlcv:
+                            update_fields["max_price_4h"] = float(max([c[2] for c in ohlcv]))
+                            update_fields["min_price_4h"] = float(min([c[3] for c in ohlcv]))
+                    except Exception as e:
+                        logger.error(f"Error fetching historical candles for {symbol}: {e}")
+                        
                 if age_hours >= 24 and not row["price_24h_later"]:
                     update_fields["price_24h_later"] = current_price
                 
@@ -74,6 +96,9 @@ async def evaluate_pending_non_trades():
                         logger.info(f"[NonTrade] Evaluated {symbol}: {update_fields['outcome']}")
     except Exception as e:
         logger.error(f"[NonTrade] Error evaluating non-trades: {e}")
+    finally:
+        if exchange:
+            await exchange.close()
 
 async def run_evaluator_loop():
     logger.info("[NonTrade] Starting non-trade evaluator service")

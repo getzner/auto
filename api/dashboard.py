@@ -1014,6 +1014,9 @@ async function load() {
                     <div style="font-size:.8rem; margin-top:8px">
                         4h later: $${p4h} (${pct}%)
                     </div>
+                    ${nt.max_price_4h ? `<div style="font-size:.7rem; color:var(--muted); margin-top:4px">
+                        Max 4h: $${nt.max_price_4h} | Min 4h: $${nt.min_price_4h}
+                    </div>` : ''}
                     <div style="margin-top:10px; display:flex; gap:6px">
                         <button class="btn-save" style="background:var(--accent2);color:black;font-size:0.7rem;padding:4px 8px" onclick="rateNonTrade(${nt.decision_id}, 1, this)">✅ Goed afgewezen</button>
                         <button class="btn-save" style="background:var(--danger);color:white;font-size:0.7rem;padding:4px 8px" onclick="rateNonTrade(${nt.decision_id}, -1, this)">❌ Had moeten traden</button>
