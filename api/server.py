@@ -429,6 +429,26 @@ async def get_status(user: str = Depends(verify)):
     return JSONResponse(content=json.loads(json.dumps(payload, default=str)))
 
 
+# ── Manual Triggers ───────────────────────────────────────
+
+@app.post("/run/scan")
+async def trigger_manual_scan(user: str = Depends(verify)):
+    """Manually trigger the analyst pipeline for all configured symbols."""
+    import os
+    import asyncio
+    from agents.orchestrator import run_cycle
+    from loguru import logger
+    
+    symbols_str = os.getenv("SYMBOLS", "BTC/USDT,ETH/USDT")
+    symbols = [s.strip() for s in symbols_str.split(",")]
+    
+    for symbol in symbols:
+        asyncio.create_task(run_cycle(symbol))
+        logger.info(f"[API] Manual scan triggered for {symbol}")
+        
+    return {"status": "success", "message": f"Manual scan started for {symbols}"}
+
+
 # ── Decision History ──────────────────────────────────────
 
 @app.get("/decisions")

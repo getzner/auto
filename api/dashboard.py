@@ -410,11 +410,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </head>
 <body>
 
-<header>
-  <div class="dot"></div>
-  <div>
-    <h1>Trade Server Dashboard</h1>
-    <div class="subtitle" id="lastUpdate">Loading...</div>
+<header style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 32px;">
+  <div style="display: flex; align-items: center; gap: 12px;">
+    <div class="dot"></div>
+    <div>
+      <h1>Trade Server Dashboard</h1>
+      <div class="subtitle" id="lastUpdate">Loading...</div>
+    </div>
+  </div>
+  <div style="display: flex; align-items: center; gap: 16px;">
+    <span id="safetyStatus" style="font-size: .85rem; font-weight: 700; text-transform:uppercase"></span>
+    <button class="btn-save" style="background: var(--danger); border: 2px solid #ff0000; box-shadow: 0 0 10px rgba(239, 68, 68, 0.3); padding: 8px 16px;" id="killSwitchBtn" onclick="toggleKillSwitch()">
+        EMERGENCY KILL SWITCH
+    </button>
   </div>
 </header>
 
@@ -566,13 +574,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 
 
-<!-- &#128736; System Control Center &#128736; -->
 <div class="card" style="margin-bottom:28px; border-top: 4px solid var(--warn)">
   <div class="card-title">&#128736; System Control Center</div>
   <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap">
     <button class="btn-save" style="background:var(--warn); color:black" onclick="confirmRestart()">Restart All Services</button>
     <button class="btn-save" style="background:var(--danger); color:white" onclick="confirmKillGhosts()">Kill Ghost Processes &#128123;</button>
     <button class="btn-save" onclick="reloadConfig()">Reload Configuration</button>
+    <button class="btn-save" style="background:var(--accent2); color:black" onclick="triggerManualScan()">Force Manual Scan &#128269;</button>
     <div style="flex-grow:1"></div>
     <div style="font-size:.75rem; color:var(--muted)">
        PID: <span id="serverPid" style="font-family:monospace; color:var(--text)">&#8212;</span> | 
@@ -582,17 +590,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div id="controlStatus" style="font-size:.75rem; margin-top:12px; height:1rem"></div>
 </div>
 
-<div style="margin-bottom: 28px; display: flex; justify-content: space-between; align-items: center;">
-    <div>
-        <button class="btn-save" style="background: var(--danger); border: 2px solid #ff0000; box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);" id="killSwitchBtn" onclick="toggleKillSwitch()">
-            EMERGENCY KILL SWITCH
-        </button>
-        <span id="safetyStatus" style="font-size: .85rem; font-weight: 700; margin-left:12px; text-transform:uppercase"></span>
-    </div>
-    <div style="text-align: right;">
-        <span id="saveStatus" style="font-size: .8rem; margin-right:16px"></span>
-        <button class="btn-save" id="saveConfigBtn" onclick="saveAllConfig()" disabled>Save All Configurations</button>
-    </div>
+<div style="margin-bottom: 28px; text-align: right;">
+    <span id="saveStatus" style="font-size: .8rem; margin-right:16px"></span>
+    <button class="btn-save" id="saveConfigBtn" onclick="saveAllConfig()" disabled>Save All Configurations</button>
 </div>
 
 <!-- Charts row -->
@@ -1409,6 +1409,27 @@ async function toggleKillSwitch() {
         });
         if (res.ok) pollSafety();
     } catch(e) { alert("Kill switch update failed!"); }
+}
+
+async function triggerManualScan() {
+    const st = document.getElementById('controlStatus');
+    if (!confirm("Weet je zeker dat je *nu* een handmatige scan wilt forceren voor alle actieve symbols?")) return;
+    st.innerHTML = '&#9203; Handmatige scan starten...';
+    st.style.color = 'var(--text)';
+    
+    try {
+        const res = await fetch('/api/run/scan', { method: 'POST' });
+        if (res.ok) {
+            st.innerHTML = '&#9989; Scan geactiveerd! Kijk in de logs...';
+            st.style.color = 'var(--accent2)';
+        } else {
+            throw new Error(`Server returned ${res.status}`);
+        }
+    } catch(e) {
+        st.innerHTML = `&#10060; Fout bij activeren scan: ${e.message}`;
+        st.style.color = 'var(--danger)';
+    }
+    setTimeout(() => { if(st.innerHTML.includes('Scan geactiveerd') || st.innerHTML.includes('Fout')) st.innerHTML = ''; }, 6000);
 }
 
 // &#9472;&#9472; Agent Debate & Sparring Room &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
